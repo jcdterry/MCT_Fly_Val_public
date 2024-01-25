@@ -1,0 +1,465 @@
+---
+title: "Inferences from models (Selected Model)"
+author: "Chris Terry"
+output: 
+  html_document: 
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE)
+```
+
+This document takes the selected models from `Model Fitting` and infers coexistence from them. 
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(brms)
+library(cowplot)
+library(posterior)
+
+logit = boot::logit
+inv.logit = boot::inv.logit
+
+LaggedFemales_PAL <- read_csv('../ProcessedData/LaggedFemales_PAL.csv')
+LaggedFemales_PAN <- read_csv('../ProcessedData/LaggedFemales_PAN.csv')
+
+niche_differentiation <- seq(from = -.25, to = 1, by = 0.001)
+niche_overlap <- 1-niche_differentiation
+fitness_ratio_min <- niche_overlap
+fitness_ratio_max <- 1/niche_overlap
+
+coexistarea_df <- data.frame(niche_diff = niche_differentiation,
+                             min_fitness_ratio = fitness_ratio_min,
+                             max_fitness_ratio = fitness_ratio_max)
+
+```
+
+# Algebra
+
+Overall expression = $$\dfrac{N_{i,t+1}}{N_{i,t}} = \dfrac{\lambda(Temp)}{\phi(N_{i,t}, N_{j,t})}$$. 
+
+Will need to calculate $\lambda(Temp)$ for each, which will need to incorporate both the effect of the zero inflation and the thermal performance curve. 
+
+### Zero inflation
+
+$Z$ = proportion 0 due to inflation. Mean after deflation due to zeros = $(1-Z)\mu$. Smaller Z means less zero inflation, and so less reduction in the original average
+
+$$  \lambda(T_t)  =   B(T_t)  \times \left(1- inv.logit(z_0+z_TT)\right) $$
+
+# Load and Inspect Models
+
+# PAL
+
+```{r}
+load( file=  '../AutoModels/Fits/FEMS_PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp')
+PAL_BEST_FIT <- PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit
+PAL_BEST_FIT
+
+stancode(PAL_BEST_FIT) %>% write_lines('../Scripts/PAL_Best_fit_STAN.stan') ## Save raw STAN for repo
+
+
+summary(PAL_BEST_FIT)$fixed %>% signif(digits =3) %>%
+  select(1:4 ) %>% 
+  rownames_to_column('Parameter') %>%
+  write_csv( '../Tables/PAL_SelectModelParams.csv')
+
+bayesplot::mcmc_dens(PAL_BEST_FIT, pars=vars(-c('lp__', 'lprior')))
+
+```
+
+# PAN
+
+```{r}
+load( file = '../AutoModels/Fits/FEMS_PAN_TP.Briere_Comp.BHTEMP1_Err.ZiNB_shapecomp')
+PAN_BEST_FIT <-    PAN_TP.Briere_Comp.BHTEMP1_Err.ZiNB_shapecomp_fit 
+
+PAN_BEST_FIT
+
+stancode(PAN_BEST_FIT) %>% write_lines('../Scripts/PAN_Best_fit_STAN.stan') ## Save raw STAN for repo
+
+
+summary(PAN_BEST_FIT)$fixed %>% signif(digits =3) %>%
+  select(1:4 ) %>% 
+  rownames_to_column('Parameter') %>%
+  write_csv( '../Tables/PAN_SelectModelParams.csv')
+
+bayesplot::mcmc_dens(PAN_BEST_FIT, pars=vars(-c('lp__', 'lprior')))
+```
+
+# Posterior Predictive Checks
+
+```{R}
+pp_check(PAL_BEST_FIT, ndraws = 1000, type = "rootogram")+
+  scale_x_continuous(limits = c(NA, 120)) +
+  xlab('Number of Females')+
+  theme(legend.position = c(0.9, 0.9)) -> PAL_pp_plot
+
+
+pp_check(PAN_BEST_FIT, ndraws = 1000, type = "rootogram")+
+  scale_x_continuous(limits = c(NA, 120))+
+  xlab('Number of Females')+
+  theme(legend.position = c(0.9, 0.9))-> PAN_pp_plot
+
+
+plot_grid(PAL_pp_plot, PAN_pp_plot, ncol = 1 ,
+          labels = c( 'a) D. pallidifrons', 'b) D. pandora'), 
+          scale=0.9, label_fontface = 'italic')
+
+ggsave( '../Figures/SI5_PPplots.png', height = 10, width = 7, 
+        bg = 'white')
+
+```
+
+# Calculating Composite Parameters
+
+```{r}
+Temp_grid <- expand.grid(Temp = seq(22.5,28.7, by =0.1), 
+                         .draw = 1:1000)
+```
+
+
+##PAL
+```{r}
+PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit %>%
+  as_draws_df() %>%
+  thin_draws(thin = 8)%>%
+  as.data.frame() %>% 
+  left_join(Temp_grid) %>%
+  mutate( Temp20 = Temp-20, 
+          Base_lambda= b_B0_Intercept *  Temp * (Temp - b_Tmin_Intercept) * sqrt(b_Tmax_Intercept - Temp) ,
+          Zi_adjust = 1-inv.logit(b_zi_Intercept + Temp*b_zi_PrevTemp)  ,
+          lambda = (Base_lambda *Zi_adjust)  )%>%
+  mutate(PAL_alphaii = b_alphaii0_Intercept+ b_alphaiiT_Intercept*Temp20,
+         PAL_alphaij = b_alphaij_Intercept )  %>%
+  select(PAL_lambda = lambda,
+         Temp,
+         Zi_adjust,
+         PAL_alphaii, 
+         PAL_alphaij, 
+         .draw) %>%
+  mutate(PAL_K = (PAL_lambda-1)/PAL_alphaii) -> PAL_Params
+
+PAL_Params %>%
+  ggplot(aes( x = Temp, y = PAL_lambda))+
+  geom_point( alpha = 0.01)+
+  geom_smooth(se = FALSE)+
+  theme_classic()+
+  scale_y_continuous(limits = c( 0,25))+
+  ggtitle('i) Fundamental Thermal\n   Performance Curve')+
+  ylab(expression("Population Growth Rate ("*lambda*")")) +
+  xlab('Temperature')-> PAL_lambda
+
+PAL_Params %>% # steep rise
+  ggplot(aes( x = Temp, y = PAL_alphaii ))+
+  geom_point(alpha = 0.01)+
+  geom_smooth(se = FALSE)+
+  theme_classic()+
+  ggtitle( 'ii) Intraspecific Competition')+
+  ylab(expression("Competition Coefficient ("*alpha[ii]*")")) +
+  xlab('Temperature') -> PAL_alphaii
+
+PAL_Params %>%  # shallow, but uncertain rise. 
+  ggplot(aes( x = Temp, y = PAL_alphaij ))+
+  geom_point(alpha = 0.01)+
+  geom_smooth(se = FALSE)+
+  theme_classic() +
+  ggtitle( 'iii) Interspecific Competition')+
+  ylab(expression("Competition Coefficient ("*alpha[ij]*")")) +
+  xlab('Temperature') -> PAL_alphaij
+
+plot_grid(PAL_lambda, PAL_alphaii, PAL_alphaij, nrow = 1) -> PAL_Plots
+PAL_Plots
+
+```
+
+##PAN
+
+```{R}
+PAN_BEST_FIT %>%
+  as_draws_df() %>%
+  thin_draws(thin = 8)%>%
+  as.data.frame() %>%
+  left_join(Temp_grid) %>%
+  mutate(Temp20 = Temp-20, 
+         Base_lambda =  b_B0_Intercept *  Temp * (Temp - b_Tmin_Intercept) * sqrt(b_Tmax_Intercept - Temp) ,
+         Zi_adjust =  1-zi,
+         lambda = (Base_lambda *Zi_adjust)   )%>%
+  mutate(PAN_alphaii = b_alphaii_Intercept,
+         PAN_alphaij = b_alphaij0_Intercept+ b_alphaijT_Intercept*Temp20)  %>%
+  select(PAN_lambda = lambda,
+         Temp, .draw,
+         PAN_alphaii,PAN_alphaij)-> PAN_Params
+
+PAN_Params %>%
+  ggplot(aes( x = Temp, y = PAN_lambda))+
+  geom_point(alpha = 0.01)+
+  geom_smooth(col = 'red')+
+  theme_classic()+
+  scale_y_continuous(limits = c( 0,20))+
+  ggtitle('i) Fundamental Thermal\n   Performance Curve') + 
+  ylab(expression("Population Growth Rate ("*lambda*")")) +
+  xlab('Temperature') -> PAN_lambda
+
+PAN_Params %>%  ## shallow decline with exponential, moderate rise with linear (???)
+  ggplot(aes( x = Temp, y = PAN_alphaii ))+
+  geom_point(alpha = 0.01)+
+  geom_smooth(col = 'red')+
+  theme_classic() +
+  ggtitle( 'ii) Intraspecific Competition')+
+  ylab(expression("Competition Coefficient ("*alpha[ii]*")")) +
+  xlab('Temperature')-> PAN_alphaii
+
+PAN_Params %>% ## moderate decline
+  ggplot(aes( x = Temp, y = PAN_alphaij ))+
+  geom_point(alpha = 0.01)+
+  geom_smooth(col = 'red')+
+  theme_classic()+
+  ggtitle( 'iii) Interspecific Competition')+
+  ylab(expression("Competition Coefficient ("*alpha[ij]*")")) +
+  xlab('Temperature')-> PAN_alphaij
+
+plot_grid(PAN_lambda, PAN_alphaii, PAN_alphaij, nrow = 1) -> PAN_Plots
+PAN_Plots
+
+```
+
+## Combining Plots
+```{r}
+plot_grid(PAL_Plots, PAN_Plots, nrow =2,
+          labels = c('a) D. pallidifrons',
+                     'b) D. pandora'), scale = 0.9,
+          label_fontface = 'italic')
+
+ggsave( '../Figures/SI4_ParamTempResp.png', height = 8, width = 10, bg = 'white')
+```
+
+# Calculating Coexistence
+
+## Inferring parameters 
+
+### Single-best value - (mean)
+
+```{r}
+Temp_grid <- expand.grid(Temp = seq(24,28.7, by =0.01), 
+                         .draw = 1)
+alpha_FLOOR = 0.01
+lambda_floor = 0.01
+
+PAL_BEST_FIT %>%
+  as_draws_df() %>%
+  summarise_draws() %>%
+  select(variable, mean) %>%
+  pivot_wider( names_from = variable, values_from = mean) %>%
+  as.data.frame() %>% 
+  mutate(.draw = 1) %>%
+  left_join(Temp_grid) %>%
+  mutate( Temp20 = Temp-20, 
+          Base_lambda= b_B0_Intercept *  Temp * (Temp - b_Tmin_Intercept) * sqrt(b_Tmax_Intercept - Temp) ,
+          Zi_adjust = 1-inv.logit(b_zi_Intercept + Temp*b_zi_PrevTemp)  ,
+          lambda = (Base_lambda *Zi_adjust)  )%>%
+  mutate(PAL_alphaii = b_alphaii0_Intercept+ b_alphaiiT_Intercept*Temp20,
+         PAL_alphaij = b_alphaij_Intercept )  %>% 
+  mutate( lambda = ifelse(lambda<lambda_floor | is.nan(lambda),
+                          lambda_floor, lambda  )) %>%
+  select(PAL_lambda = lambda,
+         Temp,
+         Zi_adjust,
+         PAL_alphaii, 
+         PAL_alphaij, 
+         .draw) -> PAL_Params_BEST
+
+PAN_BEST_FIT %>%
+  as_draws_df() %>%
+  summarise_draws() %>%
+  select(variable, mean) %>%
+  pivot_wider( names_from = variable, values_from = mean) %>%
+  as.data.frame() %>% 
+  mutate(.draw = 1) %>%
+  left_join(Temp_grid) %>%
+  mutate(Temp20 = Temp-20, 
+         Base_lambda =  b_B0_Intercept *  Temp * (Temp - b_Tmin_Intercept) * sqrt(b_Tmax_Intercept - Temp) ,
+         Zi_adjust =  1-zi,
+         lambda = (Base_lambda *Zi_adjust)   )%>%
+  mutate(PAN_alphaii = b_alphaii_Intercept,
+         PAN_alphaij = b_alphaij0_Intercept+ b_alphaijT_Intercept*Temp20)  %>%
+  select(PAN_lambda = lambda,
+         Temp, .draw,
+         PAN_alphaii,PAN_alphaij)-> PAN_Params_BEST
+
+## Inferring Niche and Fitness Differences
+
+full_join(PAL_Params_BEST, PAN_Params_BEST, 
+          by = c('Temp', '.draw')) %>%
+  mutate(PAL_alphaii = ifelse(PAL_alphaii>alpha_FLOOR, PAL_alphaii, alpha_FLOOR), 
+         PAL_alphaij = ifelse(PAL_alphaij>alpha_FLOOR, PAL_alphaij, alpha_FLOOR),
+         PAN_alphaii = ifelse(PAN_alphaii>alpha_FLOOR, PAN_alphaii, alpha_FLOOR), 
+         PAN_alphaij = ifelse(PAN_alphaij>alpha_FLOOR, PAN_alphaij, alpha_FLOOR))  %>%
+  mutate( FitnessDiff =  ((PAN_lambda) / (PAL_lambda) )*sqrt( (PAL_alphaii*PAL_alphaij ) / (PAN_alphaii*PAN_alphaij)   ),
+          NicheOverlap = sqrt( (PAN_alphaij*PAL_alphaij ) / (PAN_alphaii*PAL_alphaii)),
+          NicheDiff = 1-NicheOverlap) -> CoexistQuants_BEST
+
+CoexistQuants_BEST %>%
+  filter( Temp <28.6, Temp > 22) %>%
+  filter( Temp %in% seq( 24, 27, by = 1)) %>%
+  mutate(Temperature = paste(Temp,'°C')) -> CoexistQuants_BEST_touse
+```
+
+```{r}
+### Save best composite parameters for use in other docs
+write_csv(PAL_Params_BEST, '../Tables/CompositeParam_Temps_PAL.csv')
+write_csv(PAN_Params_BEST, '../Tables/CompositeParam_Temps_PAN.csv')
+```
+# Coexistence Plane
+
+```{R}
+full_join(PAL_Params, PAN_Params, 
+          by = c('Temp', '.draw')) %>%
+  mutate(PAL_alphaii = ifelse(PAL_alphaii>alpha_FLOOR, PAL_alphaii, alpha_FLOOR), 
+         PAL_alphaij = ifelse(PAL_alphaij>alpha_FLOOR, PAL_alphaij, alpha_FLOOR),
+         PAN_alphaii = ifelse(PAN_alphaii>alpha_FLOOR, PAN_alphaii, alpha_FLOOR), 
+         PAN_alphaij = ifelse(PAN_alphaij>alpha_FLOOR, PAN_alphaij, alpha_FLOOR))  %>%
+  mutate( PAL_lambda  = ifelse(PAL_lambda <lambda_floor | is.nan(PAL_lambda ),
+                               lambda_floor, PAL_lambda   )) %>% 
+  mutate( FitnessDiff =  ((PAN_lambda) / (PAL_lambda) )*sqrt( (PAL_alphaii*PAL_alphaij ) / (PAN_alphaii*PAN_alphaij)   ),
+          NicheOverlap = sqrt( (PAN_alphaij*PAL_alphaij ) / (PAN_alphaii*PAL_alphaii)),
+          NicheDiff = 1-NicheOverlap) -> CoexistQuants
+
+CoexistQuants %>%
+  filter( Temp <28.6, Temp > 22) %>%
+  filter( Temp %in% seq( 24, 27, by = 1)) %>%
+  mutate(Temperature = paste(Temp,'°C')) %>%
+  ggplot()+
+  geom_ribbon(data = coexistarea_df, aes(x = niche_diff,
+                                         ymin = max_fitness_ratio,
+                                         ymax = 10),
+              fill = 'lightpink1')+
+  geom_ribbon(data = coexistarea_df, aes(x = niche_diff,
+                                         ymin = 0.1,
+                                         ymax = min_fitness_ratio),
+              fill = 'steelblue1')+
+  geom_ribbon(data = coexistarea_df, aes(x = niche_diff,
+                                         ymin = min_fitness_ratio,
+                                         ymax = max_fitness_ratio),
+              fill = 'grey90') +
+  geom_ribbon(data = filter(coexistarea_df,niche_diff>0 ), aes(x = niche_diff,
+                                                               ymin = min_fitness_ratio,
+                                                               ymax = max_fitness_ratio),
+              fill = 'grey50')+
+  geom_line(data = coexistarea_df, aes(x = niche_diff, y = max_fitness_ratio)) +
+  geom_line(data = coexistarea_df, aes(x = niche_diff, y = min_fitness_ratio)) +
+  scale_y_log10(limits = c(0.1, 10))+
+  theme_classic()+
+  theme(strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        legend.position = 'bottom')+
+  ylab('Fitness Ratio (D. pandora/D. pallidifrons)')+
+  xlab('Niche Difference (1 - ρ)')+
+  scale_x_continuous(limits = c(-0.25, 1), breaks = c(-0.2, 0, 0.2,0.4, 0.6, 0.8, 1))+
+  geom_point(aes( x = NicheDiff, y =FitnessDiff),
+             size = 1, alpha = 0.5, shape =20)+
+  geom_point(aes( x = NicheDiff, y =FitnessDiff , fill = Temp),
+             size = 4, alpha =1,col = 'yellow', shape = 21,
+             data = CoexistQuants_BEST_touse)+
+  facet_wrap(~Temperature, labeller = label_both)+
+  scale_color_viridis_c(option = 'A', name = 'Temperature',
+                        limits = c(22.5, 30))+
+  scale_fill_viridis_c(option = 'A', name = 'Temperature',
+                       limits = c(22.5, 30)) -> PhasePlanePlot
+
+PhasePlanePlot
+ggsave( '../Figures/Fig2a_CoexistPlane.png', width = 6, height = 6)
+
+```
+
+# Posterior Allocations across Temperatures
+
+```{r}
+## adding extinction points for steady / comp
+read_csv('../InitialDataStorage/TubeDoc_CC3_ForDataEntry.csv') %>%
+  filter( !is.na(PAL_FEMALE)) %>%
+  separate(LINE_ID, into = c('Comp', 'Var', 'Rep'), remove = FALSE) %>%
+  mutate( Var_Bin = str_sub(Var, 1,1),
+          GenNum = parse_number(Gen)) %>%
+  mutate( PAL_TOT= PAL_FEMALE + PAL_MALE, 
+          PAL_Alive = PAL_TOT>0) %>%
+  group_by(LINE_ID,Comp,Var,Var_Bin) %>%
+  filter(Comp == 'C', Var_Bin == 'S') %>%
+  summarise(N_gens_alive = sum(PAL_Alive)) %>%
+  ungroup()%>%
+  summarise(Recorded_Exp = mean(N_gens_alive+1),
+            SD_Gens = sd(N_gens_alive),
+            SE = SD_Gens / sqrt(60)) %>%
+  mutate( PlusSD =Recorded_Exp+SD_Gens, 
+          MinusSD = Recorded_Exp - SD_Gens) -> MeanExp
+```
+
+```{R}
+
+CoexistQuants %>%
+  filter( Temp <=28, Temp >= 24) %>%
+  mutate(PAN_Wins =  FitnessDiff > 1/NicheOverlap    &   FitnessDiff > NicheOverlap  ,
+         PAL_Wins = FitnessDiff < NicheOverlap       &   FitnessDiff < 1/NicheOverlap , 
+         Coexist = !PAN_Wins & !PAL_Wins   &  NicheDiff>0 , 
+         PE  = !PAN_Wins & !PAL_Wins   &  NicheDiff<0 ) %>%          #  filter( Temp==25.5)%>%
+  select( Temp, PAN_Wins:PE) %>%
+  group_by(Temp) %>%
+  summarise( M_PAN= mean(PAN_Wins, na.rm = TRUE)*100,
+             M_PAL=mean(PAL_Wins, na.rm = TRUE)*100,
+             M_Cex=mean(Coexist, na.rm = TRUE)*100,
+             M_1PE = mean(PE, na.rm=TRUE)*100) %>%    
+  pivot_longer(names_to = 'Outcome', values_to = 'Frac', cols = starts_with('M_')) %>% 
+  ggplot(aes( x = Temp))+
+  geom_bar(aes(y = Frac, fill = Outcome), stat = 'identity', width = 0.1)+
+  scale_fill_manual(values = c('M_PAN' = 'lightpink2','M_PAL' = 'steelblue2',
+                               'M_Cex' = 'grey50','M_1PE' = 'grey90'))+
+  theme_classic()+
+  ylab('Percentage of posterior\nwith each outcome')+
+  xlab('Temperature')+
+  scale_x_continuous(sec.axis = sec_axis(~  ./0.4 - 59 , breaks = c(1:10),
+                                         name = 'Generation'))+
+  geom_point( y = 102, x = (MeanExp$Recorded_Exp-1)*0.4 +24 )+
+  geom_segment( y = 102, yend =102,
+                x = (MeanExp$MinusSD-1)*0.4 +24  ,
+                xend = (MeanExp$PlusSD-1)*0.4 +24  ) +
+  geom_label(x = 26.1, y = 80, label = 'Coexistence' ,fontface = 'italic',
+             label.r=unit(0, 'lines'),   label.padding = unit(0.75, "lines"))+
+  geom_label(x = 27.25, y = 25, label = 'Exclusion of\nD. pallidifrons'  ,fontface = 'italic',
+             label.r=unit(0, 'lines'),  label.padding = unit(0.75, "lines"))+
+  geom_label(x = 24.6, y = 40, label = 'Exclusion of\nD. pandora'  ,fontface = 'italic',
+             label.r=unit(0, 'lines'),  label.padding = unit(0.75, "lines"))+
+  guides(fill = 'none')-> Predictions_Plot
+
+Predictions_Plot
+```
+
+## Combining and Saving
+
+
+```{R}
+
+plot_grid(PhasePlanePlot, Predictions_Plot,
+          labels = c('a)', 'b)'))
+
+ggsave( '../Figures/Fig2_Predictions.png', 
+        width = 12, height = 6, dpi = 600)
+
+```
+
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,9 @@
+Parameter,Estimate,Est.Error,l-95% CI,u-95% CI
+zi_Intercept,-17.4,2.02,-21.4,-13.6
+B0_Intercept,0.0795,0.0257,0.0332,0.13
+Tmin_Intercept,18.6,2.18,12.4,21
+Tmax_Intercept,28,0.0605,27.9,28.1
+alphaii0_Intercept,0.456,0.226,0.0555,0.921
+alphaij_Intercept,0.273,0.0954,0.106,0.478
+alphaiiT_Intercept,0.0955,0.0421,0.015,0.175
+zi_PrevTemp,0.628,0.0788,0.48,0.784

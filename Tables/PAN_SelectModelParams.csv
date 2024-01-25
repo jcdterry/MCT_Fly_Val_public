@@ -1,0 +1,9 @@
+Parameter,Estimate,Est.Error,l-95% CI,u-95% CI
+shape_Intercept,-1.14,0.114,-1.36,-0.903
+B0_Intercept,0.0149,0.00929,0.0043,0.0393
+Tmin_Intercept,17.8,2.73,11.2,21.5
+Tmax_Intercept,33.6,2.99,29.5,39.5
+alphaii_Intercept,0.173,0.0566,0.0974,0.314
+alphaij0_Intercept,0.736,0.22,0.341,1.21
+alphaijT_Intercept,-0.0607,0.0336,-0.123,0.00964
+shape_Prev_PAN_FEMALE,0.0505,0.00403,0.0424,0.0583

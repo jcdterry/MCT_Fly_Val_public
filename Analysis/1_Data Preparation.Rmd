@@ -1,0 +1,147 @@
+---
+title: "Data Preparation"
+author: "Chris Terry"
+output: 
+  html_document: 
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script does some initial processing of the raw observation files, including making the lags.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+```
+
+```{r}
+Obs<- read_csv('../InitialDataStorage/TubeDoc_CC3_ForDataEntry.csv') %>%
+  filter( !is.na(PAL_FEMALE))
+
+Temps <- read_csv('../InitialDataStorage/TubeDoc_CC3_ALL.csv') %>%
+  select(Gen,  LINE_ID, TUBE_ID, IncubTemp )
+
+TempTable = Temps %>%
+  pivot_wider(id_cols = LINE_ID, names_from = Gen, values_from = IncubTemp)
+
+PrevTempTable = Temps %>%
+  mutate( PrevTemp = IncubTemp,
+          GenNum = parse_number(Gen)+1) %>%
+  select(-IncubTemp, -TUBE_ID, -Gen  )
+
+
+Gen1 = filter(Temps, Gen == 'G01')%>%
+  mutate( PAL_FEMALE=3,  ### as added on 6 June
+          PAL_MALE=2,
+          PAN_FEMALE=0,
+          PAN_MALE=0 ,
+          NOTES = 'Initialisation')
+
+bind_rows(Gen1, Obs) %>%
+  separate(LINE_ID, into = c('Comp', 'Var', 'Rep'), remove = FALSE) %>%
+  mutate( Var_Bin = str_sub(Var, 1,1),
+          GenNum = parse_number(Gen)) %>%
+  left_join(PrevTempTable, 
+            by = c('GenNum', 'LINE_ID' ))-> Obs2
+
+#### additions of PAN:
+## Start of Gen 2 - 10-15 unsexed PAN 
+## start of Gen 4 - 4 females 2 males 12 July
+## start of Gen 8 - 4 Females 2 males 29th August
+
+PAN_Additions <- data.frame(GenNum =           c(1,2,3,4,5,6,7,8,9,10),
+                            PAN_Female_added = c(0,0,0,4,0,0,0,4,0,0), 
+                            PAN_Male_added =   c(0,0,0,2,0,0,0,2,0,0))
+
+
+## Want additions to count for 'Prev PAN Tot', to work out transistions, but not for Pan Tot
+
+Obs2 %>% 
+  left_join(PAN_Additions, by = 'GenNum' )%>%
+  mutate(PAL_TOT = PAL_FEMALE+PAL_MALE,
+         PAN_TOT = PAN_FEMALE+PAN_MALE) %>%
+  arrange( LINE_ID, Gen) %>%
+  group_by(LINE_ID) %>% 
+  mutate( PAL_TOT = ifelse(is.na(PAL_TOT),0,PAL_TOT ),
+          PAN_TOT_w_additons = ifelse(is.na(PAN_TOT),0,PAN_TOT ),
+          PAN_TOT = ifelse(is.na(PAN_TOT),0,PAN_TOT ) - PAN_Female_added -PAN_Male_added ) %>% ## take off any additions. 
+  mutate( PAN_TOT = ifelse(PAN_TOT<0, 0, PAN_TOT)) %>%  ## floor at zero
+  mutate( Prev_PAL_TOT = lag(PAL_TOT),
+          Prev_PAN_TOT = lag(PAN_TOT_w_additons)) %>%
+  filter(GenNum >1) %>%
+  select(PrevTemp, GenNum ,
+         Prev_PAL_TOT, PAL_TOT,
+         Prev_PAN_TOT, PAN_TOT) %>%
+  ## Need to take 1 (or two) off the number of observed to get the number of competitors 
+  ## (assuming that they don't compete with themselves.):
+  mutate( Prev_PAL_TOT_comp = if_else(Prev_PAL_TOT==0, 0, Prev_PAL_TOT-1),
+          Prev_PAN_TOT_comp = if_else(Prev_PAN_TOT==0, 0, Prev_PAN_TOT-1))  -> LaggedTotals_all
+
+LaggedTotals_all %>%
+  filter( Prev_PAL_TOT >0)-> LaggedTotals_PAL
+
+LaggedTotals_all %>%
+  filter( Prev_PAN_TOT >0) -> LaggedTotals_PAN
+```
+
+## Saving
+```{r}
+write_csv(LaggedTotals_PAL, '../ProcessedData/LaggedTotals_PAL.csv')
+write_csv(LaggedTotals_PAN, '../ProcessedData/LaggedTotals_PAN.csv')
+
+```
+
+## Repeating the exercise with Females only
+
+```{r}
+## Want additions to count for 'Prev PAN Tot', to work out transitions, but not for Pan Tot
+Obs2 %>% 
+  left_join(PAN_Additions, by = 'GenNum' )%>%
+  arrange( LINE_ID, Gen) %>%
+  group_by(LINE_ID) %>% 
+  mutate( PAL_FEMALE = ifelse(is.na(PAL_FEMALE),0,PAL_FEMALE ),
+          PAN_FEMALE_w_additons = ifelse(is.na(PAN_FEMALE),0,PAN_FEMALE ),
+          PAN_FEMALE = ifelse(is.na(PAN_FEMALE),0,PAN_FEMALE ) - PAN_Female_added -PAN_Male_added ) %>% ## take off any additions. 
+  mutate( PAN_FEMALE = ifelse(PAN_FEMALE<0, 0, PAN_FEMALE)) %>%  ## floor at zero
+  mutate( Prev_PAL_FEMALE = lag(PAL_FEMALE),
+          Prev_PAN_FEMALE = lag(PAN_FEMALE_w_additons)) %>%
+  filter(GenNum >1) %>%
+  select(PrevTemp, GenNum ,
+         Prev_PAL_FEMALE, PAL_FEMALE,
+         Prev_PAN_FEMALE, PAN_FEMALE) %>%
+  ## Need to take 1 (or two) off the number of observed to get the number of competitors 
+  ## (assuming that they don't compete with themselves.):
+  mutate( Prev_PAL_FEMALE_comp = if_else(Prev_PAL_FEMALE==0, 0, Prev_PAL_FEMALE-1),
+          Prev_PAN_FEMALE_comp = if_else(Prev_PAN_FEMALE==0, 0, Prev_PAN_FEMALE-1))  -> LaggedFemales_all
+
+LaggedFemales_all %>%
+  filter( Prev_PAL_FEMALE >0)-> LaggedFemales_PAL
+
+LaggedFemales_all %>%
+  filter( Prev_PAN_FEMALE >0) -> LaggedFemales_PAN
+
+```
+
+## Saving
+
+```{r}
+LaggedFemales_PAL <- LaggedFemales_PAL %>% mutate(Temp20 = PrevTemp-20)
+LaggedFemales_PAN <- LaggedFemales_PAN %>% mutate(Temp20 = PrevTemp-20)
+
+write_csv(LaggedFemales_PAL, '../ProcessedData/LaggedFemales_PAL.csv')
+write_csv(LaggedFemales_PAN, '../ProcessedData/LaggedFemales_PAN.csv')
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+
+```
+
+

@@ -1,0 +1,137 @@
+---
+title: "Inferences from Poisson-fit model"
+author: "Chris Terry"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning= FALSE)
+```
+
+This document runs through the same core as the best-fit model, but with  Poisson error. 
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(brms)
+library(cowplot)
+library(posterior)
+
+logit = boot::logit
+inv.logit = boot::inv.logit
+
+niche_differentiation <- seq(from = -.25, to = 1, by = 0.001)
+niche_overlap <- 1-niche_differentiation
+fitness_ratio_min <- niche_overlap
+fitness_ratio_max <- 1/niche_overlap
+
+coexistarea_df <- data.frame(niche_diff = niche_differentiation,
+                             min_fitness_ratio = fitness_ratio_min,
+                             max_fitness_ratio = fitness_ratio_max)
+
+load( file = '../AutoModels/Fits/FEMS_PAN_TP.Briere_Comp.BHTEMP1_Err.Pois')
+load( file=  '../AutoModels/Fits/FEMS_PAL_TP.Briere_Comp.BHTEMP1_Err.Pois')
+```
+### Getting Parameters
+
+```{r}
+Temp_grid <- expand.grid(Temp = seq(22.5,27.9, by =0.1), 
+                         .draw = 1:1000)
+
+alpha_FLOOR = 0.01
+lambda_floor = 0.01
+```
+
+# Repeating with Temperature dependence
+
+## PAL
+```{r}
+PAL_TP.Briere_Comp.BHTEMP1_Err.Pois_fit %>%
+  as_draws_df() %>%
+  thin_draws(thin = 8)%>%
+  as.data.frame() %>% 
+  left_join(Temp_grid) %>%
+  mutate(Temp20 = Temp-20, 
+         PAL_alphaij = b_alphaij_Intercept,
+         PAL_alphaii = b_alphaii0_Intercept+ b_alphaiiT_Intercept*Temp20,
+         PAL_lambda = b_B0_Intercept *  Temp * (Temp - b_Tmin_Intercept) * sqrt(b_Tmax_Intercept - Temp))  %>% 
+  select(Temp,
+         PAL_lambda,
+         PAL_alphaii, 
+         PAL_alphaij, 
+         .draw)-> PAL_Params_POIS_TEMP
+
+PAN_TP.Briere_Comp.BHTEMP1_Err.Pois_fit %>%
+  as_draws_df() %>%
+  thin_draws(thin = 8)%>%
+  as.data.frame() %>%
+  left_join(Temp_grid) %>%
+  mutate(Temp20 = Temp-20, 
+         PAN_alphaii = b_alphaii_Intercept,
+         PAN_alphaij = b_alphaij0_Intercept+ b_alphaijT_Intercept*Temp20,
+         PAN_lambda= b_B0_Intercept *  Temp * (Temp - b_Tmin_Intercept) * sqrt(b_Tmax_Intercept - Temp))  %>%
+  select(PAN_lambda,
+         Temp, .draw,
+         PAN_alphaii,PAN_alphaij)-> PAN_Params_POIS_TEMP
+
+```
+
+## Working Through best-fit
+
+```{r}
+full_join(PAL_Params_POIS_TEMP, PAN_Params_POIS_TEMP, 
+          by = c('Temp', '.draw')) %>%
+  mutate(PAL_alphaii = ifelse(PAL_alphaii>alpha_FLOOR, PAL_alphaii, alpha_FLOOR), 
+         PAL_alphaij = ifelse(PAL_alphaij>alpha_FLOOR, PAL_alphaij, alpha_FLOOR),
+         PAN_alphaii = ifelse(PAN_alphaii>alpha_FLOOR, PAN_alphaii, alpha_FLOOR), 
+         PAN_alphaij = ifelse(PAN_alphaij>alpha_FLOOR, PAN_alphaij, alpha_FLOOR))  %>%
+    mutate( PAL_lambda  = ifelse(PAL_lambda <lambda_floor | is.nan(PAL_lambda ),
+                          lambda_floor, PAL_lambda   )) %>% 
+  mutate( FitnessDiff =  ((PAN_lambda) / (PAL_lambda) )*sqrt( (PAL_alphaii*PAL_alphaij ) / (PAN_alphaii*PAN_alphaij)   ),
+          NicheOverlap = sqrt( (PAN_alphaij*PAL_alphaij ) / (PAN_alphaii*PAL_alphaii)),
+          NicheDiff = 1-NicheOverlap) -> CoexistQuants_POIS_TEMP
+```
+
+
+```{R}
+CoexistQuants_POIS_TEMP %>%
+  filter( Temp <=28, Temp >= 24) %>%
+  mutate(PAN_Wins =  FitnessDiff > 1/NicheOverlap    &   FitnessDiff > NicheOverlap  ,
+         PAL_Wins = FitnessDiff < NicheOverlap       &   FitnessDiff < 1/NicheOverlap , 
+         Coexist = !PAN_Wins & !PAL_Wins   &  NicheDiff>0 , 
+         PE  = !PAN_Wins & !PAL_Wins   &  NicheDiff<0 ) %>%          #  filter( Temp==25.5)%>%
+  select( Temp, PAN_Wins:PE) %>%
+  group_by(Temp) %>%
+  summarise( M_PAN= mean(PAN_Wins, na.rm = TRUE)*100,
+             M_PAL=mean(PAL_Wins, na.rm = TRUE)*100,
+             M_Cex=mean(Coexist, na.rm = TRUE)*100,
+             M_1PE = mean(PE, na.rm=TRUE)*100) %>%     
+  pivot_longer(names_to = 'Outcome', values_to = 'Frac', cols = starts_with('M_')) %>% 
+  ggplot(aes( x = Temp))+
+  geom_bar(aes(y = Frac, fill = Outcome), stat = 'identity', width = 0.1)+
+  scale_fill_manual(values = c('M_PAN' = 'lightpink2','M_PAL' = 'steelblue2',
+                               'M_Cex' = 'grey50','M_1PE' = 'grey90'))+
+  theme_classic()+
+  geom_label(x = 25, y = 80, label = 'Priority Effects' ,fontface = 'italic',
+             label.r=unit(0, 'lines'),   label.padding = unit(0.75, "lines"))+
+  geom_label(x = 27.25, y = 50, label = 'Exclusion of\nD. pallidifrons'  ,fontface = 'italic',
+             label.r=unit(0, 'lines'),  label.padding = unit(0.75, "lines"))+
+  geom_label(x = 24.3, y = 10, label = 'Exclusion of\nD. pandora'  ,fontface = 'italic',
+             label.r=unit(0, 'lines'),  label.padding = unit(0.75, "lines"))+
+  guides(fill = 'none')+
+#  ggtitle('Posterior Predictions using Poisson error model')+
+  ylab('Percentage of posterior\nwith each outcome')+
+  xlab('Temperature')
+
+ggsave('../Figures/SI6_Poisson_error_model.png', height = 5, width = 7, bg = 'white')
+
+
+```
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+
+```

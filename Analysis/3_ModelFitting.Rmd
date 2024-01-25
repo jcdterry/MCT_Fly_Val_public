@@ -1,0 +1,292 @@
+---
+title: "Model Fitting"
+author: "Chris Terry"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document makes a first go at fitting a suite of different competition models to the gen-gen transition data. 
+
+# Data Ingestion
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(brms)
+
+source('../Scripts/Make_brms_script_PAL_FEM.R')
+source('../Scripts/Make_brms_script_PAN_FEM.R')
+
+LaggedFemales_PAL <- read_csv('../ProcessedData/LaggedFemales_PAL.csv')
+LaggedFemales_PAN <- read_csv('../ProcessedData/LaggedFemales_PAN.csv')
+
+```
+
+
+`Make_brms_script_PAL_FEM.R` and `Make_brms_script_PAN_FEM.R` are both functions to write small R scripts that can build brms / STAN models in a modular way. 
+This works by building each segment of the model required and saving the R script  in `AutoModels/Scripts/`.  
+
+# Overall Model Framework
+
+$$N_{i,t+1} = N_{i,t}   \times B(T_t) \times C(N_{i,t},N_{j,t})$$
+
+## Thermal performance curve options
+
+### Gaussian
+
+$$ B(T) = B_{pk} \times exp [ -0.5\times \dfrac{|T-T_{pk}|}{a}^2   ] $$
+
+### Taylor Sexton
+
+$$ B(T) = B_{pk} \times \dfrac{-(T-T_{min})^4  + 2 \times(T-T_{min})^2 \times (T_{pk}-T_{min})^2 }{(T_{pk}-T_{min})^4}  $$
+### Atkin 
+
+$$ B(T) = B_0\times (a-b\times T)^{T/10}$$
+
+
+### Simplified Briere 1
+
+$$ B(T) = a \times (T-T_{min}) \times)  \sqrt{T_{max} -T} $$
+
+
+
+### Simplified $\beta$ type
+
+$$ B(T) = \rho \times (a - \frac{T}{10})\times (\frac{T}{10})^b $$
+
+### Linear 
+
+$$ B(T) =  a + b\times T $$
+
+### Gaussian-Gompertz
+
+$$B(T) = a \times exp\left[-exp[b(T-T_{pk}) -\theta ] - c(T-T_{pk})^2\right]$$
+
+
+## Competition model 
+
+Saturating multi-species models for modifications to the maximum per-capita reproductive rate due to competition - only one equilibrium.
+
+### Beverton-Holt
+
+
+$$C(N_{i,t},N_{j,t}) = \dfrac{1}{ 1+ \alpha_{ii} N_{i,t} + \alpha_{ij}N_{j,t} }$$
+
+
+### Beverton-Holt logged
+
+
+$$C(N_{i,t},N_{j,t}) = \dfrac{1}{ 1+ \alpha_{ii} log(N_{i,t}+1) + \alpha_{ij}log(N_{j,t}+1) }$$
+
+
+### Lotka-Volterra (linear)
+
+
+$$C(N_{i,t},N_{j,t}) =  1+ \alpha_{ii} N_{i,t} + \alpha_{ij}N_{j,t} $$
+
+### Exponential Beverton holt
+
+Model 6 Law and Watkinson 1987 https://www.jstor.org/stable/2260211 
+
+$$C(N_{i,t},N_{j,t}) =  \dfrac{1}{ (1+ N_{i,t} + \alpha_{ij}N_{j,t} )^\beta}$$
+
+# Female Only Fits
+
+```{r}
+Option_df <- expand_grid( TP = c('Briere'),                                                            
+                          Comp =   c('BH', 'BHBeta', 'BHTEMP', 'BHTEMP1',
+                                     'BHTEMP1Beta','BHTEMPBeta', 'BHTEMP1Log','BHTEMP1LogBeta'),
+                          Err = c('Pois', 'NB', 'ZiNB', 'ZiNB_temp','ZiNB_shapetemp','ZiNB_shapecomp'),  
+                          ModelName =NA)
+
+Option_df2 <- expand_grid( TP = c('Briere'),   ### Just testing out this alternative                                                         
+                          Comp =   c('BH'),
+                          Err = c('Norm'),  
+                          ModelName =NA)
+```
+
+##  PAL
+```{R}
+Option_df_PAL <- Option_df %>% 
+  mutate(   Name = paste(paste0('TP.', TP)   ,
+                         paste0('Comp.', Comp)   ,
+                         paste0('Err.', Err)   ,
+                         sep = '_') )
+```
+
+```{R eval = FALSE}
+LaggedFemales_PAL <- filter(LaggedFemales_PAL, PrevTemp < 28) ## cutting out top degree of observations
+
+## Make all the scripts
+for(i in 1:nrow(Option_df) ){
+  try({
+    file <-Make_brms_script_PAL_FEM(i ,Option_df,  cores = 4, iter = 4000)
+    Option_df_PAL$ModelName[i] <- file
+  })
+}
+## Run the scripts
+for(i in 1:nrow(Option_df) ){
+  print(i)
+  try(source(Option_df_PAL$ModelName[i]))
+}
+```
+
+```{R}
+map_df(1:nrow(Option_df), function(i, Option_df){
+  # print(i)
+  xxx  <- load( file= paste0('../AutoModels/Fits/FEMS_PAL_', Option_df_PAL$Name[i]))
+  get(xxx)$criteria$loo$estimates %>%
+    as.data.frame()%>%
+    rownames_to_column('IC') %>%
+    mutate(Name = Option_df_PAL$Name[i]) %>%
+    return()
+}, Option_df) -> LOO_PAL
+
+map_dbl(1:nrow(Option_df), function(i, Option_df){
+  #  print(i)
+  xxx  <- load( file= paste0('../AutoModels/Fits/FEMS_PAL_', Option_df_PAL$Name[i]))
+  get(xxx) %>%
+    rhat() %>%
+    max() %>%
+    return()
+}, Option_df) -> max_rhats_PAL
+
+
+LOO_PAL %>%
+  pivot_wider(id_cols = Name, names_from = IC, values_from = c(Estimate, SE)) %>%
+  mutate( Max_Estimate_elpd_loo = max(Estimate_elpd_loo ),
+          Relative_elpd_loo = Estimate_elpd_loo -Max_Estimate_elpd_loo) %>%
+  left_join(  data.frame(Name = Option_df_PAL$Name , 
+                         Max_rhat = max_rhats_PAL) ) %>%
+  arrange( desc(Estimate_elpd_loo)) %>%
+  separate(Name, sep = '_', into = c('Thermal', 'Competition', 'Error', 'ZiNBModifier'),remove = FALSE) -> PAL_COMPAR_TABLE
+
+
+PAL_COMPAR_TABLE%>%
+  select(Thermal:ZiNBModifier , Relative_elpd_loo, SE_elpd_loo , Max_rhat  ) %>%
+  as.data.frame()
+
+
+PAL_COMPAR_TABLE %>%
+  select(Thermal:ZiNBModifier , Relative_elpd_loo, Max_rhat  ) %>%
+  mutate( Competition = str_sub(Competition, 6, -1), 
+          Thermal  = str_sub(Thermal, 4, -1), 
+          Error  = str_sub(Error, 5, -1), 
+          Relative_elpd_loo = signif(Relative_elpd_loo,3), 
+          Max_rhat = signif(Max_rhat,4))  %>%
+  write_csv('../Tables/PAL_LooCompare.csv')
+```
+
+### Comparing best model
+
+```{R}
+# load( file='../AutoModels/Fits/FEMS_PAL_TP.Briere_Comp.BHEXPTEMPBeta_Err.ZiNB_temp')
+# PAL_TP.Briere_Comp.BHEXPTEMPBeta_Err.ZiNB_temp_fit
+# PAL_TP.Briere_Comp.BHEXPTEMPBeta_Err.ZiNB_temp_fit %>% plot
+
+load( file='../AutoModels/Fits/FEMS_PAL_TP.Briere_Comp.BHTEMP1Beta_Err.ZiNB_temp')
+load( file='../AutoModels/Fits/FEMS_PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp')
+
+loo_compare(PAL_TP.Briere_Comp.BHTEMP1Beta_Err.ZiNB_temp_fit, 
+            PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit)
+
+PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit
+
+```
+
+## Fitting PAN 
+
+```{R}
+Option_df_PAN <- Option_df %>% 
+  mutate(   Name = paste(paste0('TP.', TP)   ,
+                         paste0('Comp.', Comp)   ,
+                         paste0('Err.', Err)   ,
+                         sep = '_') )
+```
+
+### Running Pandora full fit
+
+```{R eval = FALSE}
+
+## Make all the scripts
+for(i in 1:nrow(Option_df) ){
+  try({
+    file <-Make_brms_script_PAN_FEM(i ,Option_df,  cores = 4, iter = 4000)
+    Option_df_PAN$ModelName[i] <- file
+  })
+}
+for(i in 1:nrow(Option_df) ){
+  print(i)
+  try(source(Option_df_PAN$ModelName[i]))
+}
+```
+
+```{R}
+
+map_df(1:nrow(Option_df), function(i, Option_df){
+  # print(i)
+  xxx  <- load( file= paste0('../AutoModels/Fits/FEMS_PAN_', Option_df_PAN$Name[i]))
+  get(xxx)$criteria$loo$estimates %>%
+    as.data.frame()%>%
+    rownames_to_column('IC') %>%
+    mutate(Name = Option_df_PAN$Name[i]) %>%
+    return()
+}, Option_df) -> LOO_PAN
+
+
+map_dbl(1:nrow(Option_df), function(i, Option_df){
+  #  print(i)
+  xxx  <- load( file= paste0('../AutoModels/Fits/FEMS_PAN_', Option_df_PAN$Name[i]))
+  get(xxx) %>%
+    rhat() %>%
+    max() %>%
+    return()
+}, Option_df) -> max_rhats_PAN
+
+
+LOO_PAN %>%
+  pivot_wider(id_cols = Name, names_from = IC, values_from = c(Estimate, SE)) %>%
+  mutate( Max_Estimate_elpd_loo = max(Estimate_elpd_loo ),
+          Relative_elpd_loo = Estimate_elpd_loo -Max_Estimate_elpd_loo) %>%
+  left_join(  data.frame(Name = Option_df_PAN$Name , 
+                         Max_rhat = max_rhats_PAN) ) %>%
+  arrange( desc(Estimate_elpd_loo)) %>%
+  separate(Name, sep = '_', into = c('Thermal', 'Competition', 'Error', 'ZiNBModifier'),remove = FALSE) -> PAN_COMPAR_TABLE
+
+PAN_COMPAR_TABLE%>%
+  select(Thermal:ZiNBModifier , Relative_elpd_loo, SE_elpd_loo , Max_rhat  ) %>%
+  as.data.frame
+
+
+
+PAN_COMPAR_TABLE %>%
+  select(Thermal:ZiNBModifier , Relative_elpd_loo, Max_rhat  ) %>%
+  mutate( Competition = str_sub(Competition, 6, -1), 
+          Thermal  = str_sub(Thermal, 4, -1), 
+          Error  = str_sub(Error, 5, -1), 
+          Relative_elpd_loo = signif(Relative_elpd_loo,3), 
+          Max_rhat = signif(Max_rhat,4))  %>%
+  write_csv('../Tables/PAN_LooCompare.csv')
+```
+
+### Viewing best model
+
+```{R}
+#load( file='../AutoModels/Fits/FEMS_PAN_TP.Briere_Comp.BHEXPTEMP_Err.ZiNB_shapecomp')
+#PAN_TP.Briere_Comp.BHEXPTEMP_Err.ZiNB_shapecomp_fit
+#PAN_TP.Briere_Comp.BHEXPTEMP_Err.ZiNB_shapecomp_fit %>% plot
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+
+```
+

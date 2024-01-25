@@ -1,0 +1,384 @@
+---
+title: "Data Summary and Extinction Calculations"
+author: "Chris Terry"
+output: 
+  html_document: 
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document calculates the summary statistics used in the paper and generates the plots describing extinction points. 
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(lme4)
+
+Obs<- read_csv('../InitialDataStorage/TubeDoc_CC3_ForDataEntry.csv') %>%
+  filter( !is.na(PAL_FEMALE))
+
+Temps <- read_csv('../InitialDataStorage/TubeDoc_CC3_ALL.csv') %>%
+  select(Gen,  LINE_ID, TUBE_ID, IncubTemp )
+
+TempTable = Temps %>%
+  pivot_wider(id_cols = LINE_ID, names_from = Gen, values_from = IncubTemp)
+
+PrevTempTable = Temps %>%
+  mutate( PrevTemp = IncubTemp,
+          GenNum = parse_number(Gen)+1) %>%
+  select(-IncubTemp, -TUBE_ID, -Gen  )
+
+LaggedFemales_PAL <- read_csv('../ProcessedData/LaggedFemales_PAL.csv')
+LaggedFemales_PAN <- read_csv('../ProcessedData/LaggedFemales_PAN.csv')
+
+```
+
+
+```{r}
+### Adding in initial condition
+Gen1 = filter(Temps, Gen == 'G01')%>%
+  mutate( PAL_FEMALE=3,  ### as added on 6 June
+          PAL_MALE=2,
+          PAN_FEMALE=0,
+          PAN_MALE=0 ,
+          NOTES = 'Initialisation')
+
+bind_rows(Gen1, Obs) %>%
+  separate(LINE_ID, into = c('Comp', 'Var', 'Rep'), remove = FALSE) %>%
+  mutate( Var_Bin = str_sub(Var, 1,1),
+          GenNum = parse_number(Gen)) %>%
+  left_join(PrevTempTable, 
+            by = c('GenNum', 'LINE_ID' ))-> Obs2
+
+## Confirming that the competition treatments are not different at the G2 census (when they should be the same as competitors ony just added)
+Obs2 %>%
+  filter( Gen == 'G02') %>%
+  lm( data = ., PAL_FEMALE ~ Comp) %>%
+  summary
+
+```
+
+## Incubator Temperature Plots
+
+```{r message=FALSE}
+
+expand.grid( day = (0:11)/12, 
+             GenNum = 1:10) -> dayintervals
+
+Obs2 %>%
+  filter(Var_Bin == 'V') %>%
+  left_join(dayintervals, relationship = "many-to-many") %>%
+  mutate( GenNum_int = GenNum + day) %>%
+  ggplot( aes( x = GenNum_int, y = IncubTemp))+
+  geom_line()+ 
+  geom_point(aes(col = IncubTemp))+
+  facet_wrap(~Var)+
+  theme_classic()+
+  scale_x_continuous(breaks= 1:10)+
+  scale_color_viridis_c(option = 'A', name = 'Temperature', limits = c(22.5, 30))+
+  guides(col='none')+
+  theme(axis.text.x = element_text(size = 7),
+        strip.background = element_blank())+
+  ylab('')+
+  xlab('Generation') -> VariableIncubTemps
+
+Obs2 %>%
+  filter(Var_Bin == 'S') %>%
+  left_join(dayintervals, relationship = "many-to-many") %>%
+  mutate( GenNum_int = GenNum + day) %>%
+  ggplot( aes( x = GenNum_int, y = IncubTemp))+
+  geom_line()+
+  geom_point(aes(col = IncubTemp), size =5)+
+  #  facet_wrap(~Var)+
+  theme_classic()+
+  scale_x_continuous(breaks= 1:10)+
+  scale_color_viridis_c(option = 'A', name = 'Temperature', limits = c(22.5, 30))+
+  ylab('Incubator Temperature')+
+  xlab('Generation') +
+  theme(legend.position = 'bottom') -> SteadyIncubTemps
+
+plot_grid(SteadyIncubTemps, VariableIncubTemps,
+          labels = c('Steady Rise', 'Variable Rise'),
+          label_fontface = 'plain',
+          scale =0.9, rel_widths = c(1,2) )
+
+ggsave('../Figures/Fig1b_tempplots.png', width = 8, height = 5, bg = 'white')
+```
+
+# Summary Totals
+
+```{R}
+Obs2 %>%
+  summarise( sum(PAL_MALE), sum(PAL_FEMALE),
+             sum(PAN_MALE, na.rm = TRUE), 
+             sum(PAN_FEMALE, na.rm = TRUE))
+
+Obs2 %>%
+  summarise(sum(PAL_FEMALE>0),
+            sum(PAN_FEMALE>0, na.rm = TRUE))
+```
+
+## Average of Non-Zero Counts
+
+```{r}
+LaggedFemales_PAL%>%
+  filter( PAL_FEMALE>0) %>%
+  summarise(mean(PAL_FEMALE),
+            sd(PAL_FEMALE) )
+
+```
+
+
+# Sex Ratio
+
+```{r}
+
+## Calculating expected interval
+Interval95 = data.frame(SampleSize =1:100,
+                        N_female = (1:100)/2,
+                        Lower = qbinom(prob = 0.5, size =1:100, p = 0.025),
+                        Upper = qbinom(prob = 0.5, size =1:100, p = 0.975))
+
+Obs2 %>%
+  filter(Gen !='G01') %>%
+  filter( !(PAL_FEMALE==0 & PAL_MALE==0)) %>%
+  ggplot(aes(PAL_FEMALE ,PAL_MALE) )+
+  geom_point(alpha = 0.1)+
+  geom_abline(slope = 1, intercept = 0)+
+  geom_smooth()+
+  geom_line(data = Interval95, aes( x = N_female, y = Lower), col = 2)+
+  geom_line(data = Interval95, aes( x = N_female, y = Upper), col = 2)+
+  theme_classic()+
+  theme(plot.title = element_text(face = 'italic'))+
+  xlab('Female Count')+
+  ylab('Male Count')+
+  ggtitle('D. pallidifrons')+
+  coord_fixed(xlim = c(0,80),ylim = c(0,80),ratio = 1)-> PAL_SR
+
+Obs2 %>%
+  filter( !(PAN_FEMALE==0 & PAN_MALE==0)) %>%
+  ggplot(aes(PAN_FEMALE ,PAN_MALE) )+
+  geom_point(alpha = 0.1)+
+  geom_abline(slope = 1, intercept = 0)+
+  geom_smooth()+
+  geom_line(data = Interval95, aes( x = N_female, y = Lower), col = 2)+
+  geom_line(data = Interval95, aes( x = N_female, y = Upper), col = 2)+
+  theme_classic() +
+  theme(plot.title = element_text(face = 'italic'))+
+  xlab('Female Count')+
+  ylab('Male Count')+
+  ggtitle('D. pandora')+
+  coord_fixed(xlim = c(0,80),ylim = c(0,80),ratio = 1) -> PAN_SR
+
+plot_grid(PAL_SR,PAN_SR )
+ggsave('../Figures/SI2_SexRatio.png', width = 6, height =4)
+
+```
+
+# Population Trajectories
+
+Just including females in these plots. 
+
+```{r}
+## PAL
+Obs2 %>% 
+  mutate(Competition = ifelse( Comp =='C', 'With Competition', 'Monoculture')) %>%
+  mutate(Temperature = ifelse( Var_Bin =='V', 'Variable Rise', 'Steady Rise')) %>%
+  ggplot( aes( x = GenNum, y = PAL_FEMALE,
+               col = IncubTemp   , group = LINE_ID))+
+  geom_line()+
+  scale_x_continuous(breaks= 1:10)+
+  scale_color_viridis_c(option = 'A', name = 'Temperature', limits = c(22.5, 30))+
+  facet_grid(Competition~Temperature)+
+  theme_classic()+
+  theme(plot.title = element_text(face = 'italic'))+
+  xlab('Generation')+
+  ylab('Female count')+
+  ggtitle('D. pallidifrons') -> FemalePAL_TS
+
+# PAN
+Obs2 %>% 
+  mutate(Competition = ifelse( Comp =='C', 'With Competition', 'Monoculture')) %>%
+  mutate(Temperature = ifelse( Var_Bin =='V', 'Variable Rise', 'Steady Rise')) %>%
+  filter( Comp == 'C') %>%
+  ggplot( aes( x = GenNum, y = PAN_FEMALE,
+               col = IncubTemp   , group = LINE_ID))+
+  geom_line()+
+  scale_x_continuous(breaks= 1:10)+
+  scale_color_viridis_c(option = 'A', name = 'Temperature', limits = c(22.5, 30))+
+  facet_wrap(~Temperature)+
+  xlab('Generation')+
+  ylab('Female count')+
+  theme_classic()+
+  theme(plot.title = element_text(face = 'italic'))+
+  theme(legend.position = 'bottom', legend.direction = 'horizontal')+
+  ggtitle('D. pandora') -> FemalePAN_TS
+
+### Combining
+CombinedPlot <- plot_grid(FemalePAL_TS+guides(col='none'),
+                          FemalePAN_TS,
+                          ncol = 1, rel_heights = c(2,1.5))
+
+ggsave(plot = CombinedPlot,'../Figures/SI1_TimeSeries_all_fem.png', height = 8, width=6)
+
+```
+
+# Extinction Point Distributions
+
+NB using both males and females here for last seen data
+
+```{r}
+Obs2 %>%
+  mutate( PAL_TOT= PAL_FEMALE + PAL_MALE, 
+          PAL_Alive = PAL_TOT>0) %>%
+  group_by(LINE_ID,Comp,Var,Var_Bin) %>%
+  summarise(N_gens = sum(PAL_Alive)) %>%
+  ungroup() %>%
+  mutate(Competition = ifelse( Comp =='C', 'With Competition', 'Monoculture')) %>%
+  mutate(Temperature = ifelse( Var_Bin =='V', 'Variable Rise', 'Steady Rise')) %>%
+  mutate(Treatment =paste0(Comp, Var_Bin))-> LastSeenData
+
+LastSeenData  %>%
+  group_by(Competition,Temperature) %>%
+  summarise(Mean_Gens = mean(N_gens),
+            SD_Gens = sd(N_gens),
+            SE = SD_Gens / sqrt(60))%>%
+  mutate(xmin = Mean_Gens-SD_Gens,
+         xmax = Mean_Gens+SD_Gens) -> MeanGens
+
+LastSeenData%>%  
+  ggplot()+
+  scale_x_continuous(breaks= 2:10)+
+  geom_histogram(aes( x = N_gens+1 ), binwidth = 1, fill = 'skyblue')+
+  theme_classic()+
+  theme(strip.background = element_blank(),
+        strip.text = element_text(size = 10))+
+  facet_wrap(~Temperature+Competition, nrow = 1)+
+  geom_point(data = MeanGens, aes( x = Mean_Gens+1), y = 1)+
+  geom_errorbarh(data = MeanGens,  aes( xmin = xmin+1, xmax = xmax+1, y = 1))+
+  geom_text(data = MeanGens, 
+            aes( x = Mean_Gens+1, label = signif(Mean_Gens+1,3)),
+            y = 3, size = 8)+
+  xlab('Generation Recorded Extirpated')+
+  ylab('Count')
+
+ggsave('../Figures/Fig1C_ExtirpHists.png', height = 4, width = 8)
+```
+
+## Statistical tests of Extiprations
+
+```{r}
+### Overall of impact of treatment
+aov( N_gens~Treatment, data =LastSeenData) %>% summary
+
+## Follow-up test of pairwise comparisons
+TukeyHSD(aov( N_gens~Treatment, data =LastSeenData)) %>% plot
+
+## Overall distinction between 'MS' and others
+LastSeenData %>%
+  mutate( IS_MS= Treatment=='MS') %>%
+  lm( N_gens~IS_MS, data =.) %>% 
+  summary
+```
+
+## Effect of trajectory of variability
+
+```{r}
+Mod_RE <- lmer(data = filter(LastSeenData, Var_Bin =='V'),
+               N_gens~Treatment + (1|Var))
+
+Mod_wo <- lm(data = filter(LastSeenData, Var_Bin =='V'),
+             N_gens~Treatment)
+
+anova( Mod_RE, Mod_wo) ## exact pathway seems to be somewhat influential 
+summary(Mod_RE)
+
+filter(LastSeenData, Var_Bin =='V') %>%
+  group_by(Var) %>%
+  summarise(MeanGens= mean(N_gens)) -> GensPerTempRoute
+
+Temps %>%
+  separate(LINE_ID, into = c('Comp', 'Var', 'Rep'), remove = FALSE) %>%
+  select(Gen, Var, IncubTemp) %>%
+  distinct() -> TempRoutes
+
+### Possible Features of temperature routes
+
+# Initial Value
+# Mean of first 3, 
+# Mean of 4-6
+# Mean of 7-10
+
+TempRoutes %>%
+  mutate( GenNum = parse_number(Gen))%>%
+  filter( Var != 'S') %>%
+  group_by(Var) -> TR2
+
+### Comparing the 12 routes, initial value is not a significant predictor of mean gen
+GensPerTempRoute %>%
+  left_join(summarise(filter(TR2,Gen   == 'G01' ),  InitialValue = IncubTemp)) %>%
+  left_join(summarise(filter(TR2,GenNum <4),  Mean1 = mean(IncubTemp))) %>%
+  left_join(summarise(filter(TR2,GenNum %in% c(4,5,6)),  Mean2 = mean(IncubTemp))) %>%
+  left_join(summarise(filter(TR2,GenNum %in% c(7,8,9,10)),  Mean3 = mean(IncubTemp))) %>%
+  select(-1) %>%
+  lm(data=.,    MeanGens~InitialValue) %>%
+  summary()
+
+### Looking at the individual cases:
+filter(LastSeenData, Var_Bin =='V') %>%
+  left_join(filter(TempRoutes, Gen   == 'G01') ) %>%
+  lm(data=.,    N_gens ~IncubTemp*Treatment ) %>%
+  summary() 
+
+## Across the full 120 trials, gen 1 temp does come out as significant (N_gens ~IncubTemp), but this fades when treatment also included. 
+
+GensPerTempRoute %>% 
+  mutate(Rank = rank(MeanGens)) %>%
+  left_join(TempRoutes, by = 'Var') %>%
+  mutate( GenNum = parse_number(Gen)) %>%
+  ggplot(aes( x = GenNum, y = IncubTemp, 
+              col = MeanGens, group=Var))+
+  geom_line()+
+  facet_wrap(~Rank)
+
+```
+
+## Extinctions plotted on trajectories
+
+```{R}
+
+filter(LastSeenData, Var_Bin =='V') %>%
+  separate(LINE_ID, into = c('Comp', 'Var', 'Rep'), remove = FALSE) %>%
+  group_by(Var,N_gens ) %>%
+  mutate(loc =22+  (1:n())/3  )-> ExtinctionsToPlot
+  
+GensPerTempRoute %>% 
+  left_join(TempRoutes, by = 'Var') %>%
+  mutate( GenNum = parse_number(Gen)) %>%
+  ggplot()+
+  geom_line(aes( x = GenNum, y = IncubTemp, 
+               group=Var))+
+  facet_wrap(~Var) +
+  geom_point(aes( x = N_gens +1, y = loc, col = Competition       ),
+             data =ExtinctionsToPlot , shape = 4)+
+  theme_classic()+
+  ylab('Incubator Temperature')+
+  xlab('Generation')+
+  scale_color_discrete(name = 'Extinctions\nunder treatment:')
+
+ggsave( '../Figures/SI3_VarTrajs.png', width = 7, height = 5)
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+
+```
+
