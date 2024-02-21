@@ -419,10 +419,10 @@ CoexistQuants %>%
   xlab('Temperature')+
   scale_x_continuous(sec.axis = sec_axis(~  ./0.4 - 59 , breaks = c(1:10),
                                          name = 'Generation'))+
-  geom_point( y = 102, x = (MeanExp$Recorded_Exp-1)*0.4 +24 )+
+  geom_point( y = 102, x = (MeanExp$Recorded_Exp)*0.4 +24 )+
   geom_segment( y = 102, yend =102,
-                x = (MeanExp$MinusSD-1)*0.4 +24  ,
-                xend = (MeanExp$PlusSD-1)*0.4 +24  ) +
+                x = (MeanExp$MinusSD)*0.4 +24  ,
+                xend = (MeanExp$PlusSD)*0.4 +24  ) +
   geom_label(x = 26.1, y = 80, label = 'Coexistence' ,fontface = 'italic',
              label.r=unit(0, 'lines'),   label.padding = unit(0.75, "lines"))+
   geom_label(x = 27.25, y = 25, label = 'Exclusion of\nD. pallidifrons'  ,fontface = 'italic',
@@ -443,7 +443,7 @@ plot_grid(PhasePlanePlot, Predictions_Plot,
           labels = c('a)', 'b)'))
 
 ggsave( '../Figures/Fig2_Predictions.png', 
-        width = 12, height = 6, dpi = 600)
+        width = 8, height = 4, dpi = 600)
 
 ```
 
