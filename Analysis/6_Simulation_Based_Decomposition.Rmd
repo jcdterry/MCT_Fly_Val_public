@@ -1,0 +1,434 @@
+---
+title: "Simulation-based decomposition"
+author: "Chris Terry"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(brms)
+library(knitr)
+```
+
+# Partitioning Framework 
+This script looks at how fluctuating environments impact coexistence predictions at each mean temperature. It broadly following Ellner et al (2019)'s https://onlinelibrary.wiley.com/doi/full/10.1111/ele.13159 simulation based method.
+
+Given preceding analyses, I will just look at whether PAL is able in invade an equilibrium population of PAN, since this is the key transition of interest.
+
+For each temperature will calculate the implied long-term growth rate (LGR,) under a variety of model scenarios.
+Here this will be referred to as $\bar{r}$, although we are in a discrete time model. 
+Differences between these scenarios are used to define and calculate key partitions to identify the impact of various processes.
+
+To simplify the partitioning will not include any of the fluctuations from expected stochasticity (modelled = the expectation, not a draw)
+
+Compared to some alternatives, the baseline is assumed to be without any competitors, not just whether they fluctuate. 
+
+Working from the top-down (Letten et al. 2018,  https://www.pnas.org/doi/full/10.1073/pnas.1801846115), first  capture any 'storage effects', by breaking any covariance between the temperature and the number of the competitors
+
+-$E$: PAL in competition under fluctuating temperatures (*correlated* between the two species)
+
+
+-$D$: PAL in competition under fluctuating temperatures (uncorrelated between the two species)
+
+-$\Delta_{cov}$ =  $E-D$ (Additional effect of covariance in environment (~Storage Effect ))
+
+To identify the core impact of competition $\Delta_C$ and fluctuations $\Delta_\sigma$, three further models are built:
+
+-$A$ (Baseline): PAL in monoculture under fixed temperature
+
+$$A = r_0  $$
+
+-$B$: PAL under competition (at fixed temperature ) and fixed temperature
+
+$$B = r_0 +  \Delta_C  $$
+
+-$C$: PAL in monoculture under fluctuating temperature
+
+$$C = r_0 +   \Delta_\sigma  $$
+
+
+-$r_0$  = Baseline growth
+
+- $\Delta_*$  is an interaction term to allow: 
+
+$$D = r_0 +  \Delta_C + \Delta_\sigma +\Delta_*$$
+
+Overall:
+
+$$E = r_0 +  \Delta_C + \Delta_\sigma +\Delta_* +\Delta_{cov} $$
+
+To accommodate the uncertainty in the parameters of the selected model, this is repeated for 1000 parameter draws.
+
+# Simulation 
+
+Process at each temperature:
+
+- Generate temperature regime
+- Iterate PAN numbers in monoculture
+- Discard burn-in period
+- vector of PAL growth rates with these temperatures and PAN densities
+- Calculate geometric average of PAL growth rates 
+
+Also calculating without variable temperature, to check variability is having an effect. 
+
+### Function to Calculate Partions for a given midpoint temperature. 
+
+```{r}
+
+## Now using the models directly, not the parameters. 
+
+load( file=  '../AutoModels/KeyFits/FEMS_PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp')
+PAL_BEST_FIT <- PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit
+load( file = '../AutoModels/KeyFits/FEMS_PAN_TP.Briere_Comp.BHTEMP1_Err.ZiNB_shapecomp')
+PAN_BEST_FIT <-    PAN_TP.Briere_Comp.BHTEMP1_Err.ZiNB_shapecomp_fit 
+
+set.seed(1)
+BRMS_DRAWS <- sample(1:8000, size = 1000, replace = FALSE) ## To mix across chains
+```
+
+
+```{r}
+PrepData <-   function(df){
+  df$Temp20 = df$PrevTemp -20
+  
+  df %>%
+    mutate(Prev_PAL_FEMALE_comp = ifelse(Prev_PAL_FEMALE==0, 0, Prev_PAL_FEMALE-1), 
+           Prev_PAN_FEMALE_comp = ifelse(Prev_PAN_FEMALE==0, 0, Prev_PAN_FEMALE-1)) %>%                 
+    return()
+}
+
+
+CalcPartions <- function( MidTemp = 25, BRMS_DRAWS =BRMS_DRAWS){
+  
+  ## Takes models from environment
+  ## NB using r as shorthand for population growth rate (Nt/Nt+1, normally lambda), not as Instantaneous population growth rate
+  
+  ## It is as fast to call over all samples simultaneously, and pluck out just 1000 draws
+  N = 1000
+  
+  
+  R_past_tmax <- 0.1 ## need to pick a low non-zero number for  grwoth rate past tmax, or in case where getting negatives
+    
+  set.seed(1)
+  Flucts <-   sample(c( -1.5, 0, 1.5), replace = TRUE, N) #  Generate Sequence of Temperatures
+  TempSeq = rep(MidTemp, N)  +Flucts  # if no flucts, dynamics are stable => draws are stable
+  TempSeq2 <- sample(TempSeq)  # randomise the time series to break any correlations
+  
+  ################################################
+  #### Determining PAN monoculture trajectories
+  ##########################
+  ### PAN under steady temperature
+  ###########
+  PAN_Mat_steady = matrix(NA,nrow = N, ncol = 1000) # Rows = time, cols = draw from brms (1000)
+  PAN_Mat_steady[1,] <- 20
+  for(t in 2:20){  # Seems to steady well before 10, doubling for safety
+    newdata =  data.frame(Prev_PAL_FEMALE =0,
+                          Prev_PAN_FEMALE = PAN_Mat_steady[t-1,],
+                          PrevTemp = MidTemp) %>%PrepData
+    All_Predictions<- posterior_epred(PAN_BEST_FIT, draw_ids = BRMS_DRAWS, newdata)
+    PAN_Mat_steady[t,] <-  diag(All_Predictions)
+  #  print(t)
+  #  matplot(PAN_Mat_steady, type = 'l')
+  }
+  PAN_Eqm_draws <- PAN_Mat_steady[20, ]
+  
+  #############################################
+  ##### PAN under fluctuations
+  
+  PAN_Mat = matrix(NA,nrow = N, ncol = 1000) # Rows = time, cols = draw from brms (1000)
+  PAN_Mat[1,] <- 10
+  for(t in 2:N){
+    newdata =  data.frame(Prev_PAL_FEMALE =0,
+                          Prev_PAN_FEMALE = PAN_Mat[t-1,],
+                          PrevTemp = TempSeq[t-1]) %>%PrepData
+    
+    All_Predictions<- posterior_epred(PAN_BEST_FIT, draw_ids = BRMS_DRAWS, newdata)
+    PAN_Mat[t,] <-  diag(All_Predictions)
+ #   print(t)
+  }
+  
+#  matplot(PAN_Mat[,1:20], type = 'l')
+  
+  #####################
+  # PAL growth rates (absolutely full model)
+  ## Full Model (PAL invading from rare into monoculture of PAN, Correlated environment)
+  PAL_GROWTH_Mat = matrix(NA,nrow = N, ncol = 1000) # Rows = time, cols = draw from brms (1000)
+  for(t in 51:N){
+    
+    data.frame(Prev_PAL_FEMALE =1,
+               Prev_PAN_FEMALE = PAN_Mat[t-1,],
+               PrevTemp = TempSeq[t-1]) %>%
+      PrepData %>%
+      posterior_epred(PAL_BEST_FIT, draw_ids = BRMS_DRAWS,
+                      newdata =. ) %>%
+      diag() -> PAL_growths
+    
+    PAL_GROWTH_Mat[t-1,] <- PAL_growths
+#    print(t)
+  }
+  
+  PAL_GROWTH_Mat_NoBurn <-  PAL_GROWTH_Mat[50:(N-1), ]
+  
+   ## taking care of errors from overshooting tmax
+  PAL_GROWTH_Mat_NoBurn[is.nan(PAL_GROWTH_Mat_NoBurn)] <- R_past_tmax 
+  PAL_GROWTH_Mat_NoBurn[PAL_GROWTH_Mat_NoBurn<R_past_tmax] <- R_past_tmax 
+
+#  matplot(PAL_GROWTH_Mat_NoBurn[,1:20], type = 'l')
+  
+  MeanGrowthRates_full <-   exp(colMeans(log(PAL_GROWTH_Mat_NoBurn)))  ## Geometric mean of growth rate
+  
+  #########################
+  ##  PAL Growth Rates (No temp correlation model)
+  #####
+  PAL_GROWTH_Mat2 = matrix(NA,nrow = N, ncol = 1000) # Rows = time, cols = draw from brms (1000)
+  
+  for(t in 51:N){
+    
+    data.frame(Prev_PAL_FEMALE =1,
+               Prev_PAN_FEMALE = PAN_Mat[t-1,],
+               PrevTemp = TempSeq2[t-1]) %>%
+      PrepData %>%
+      posterior_epred(PAL_BEST_FIT, draw_ids = BRMS_DRAWS,
+                      newdata =. ) %>%
+      diag() -> PAL_growths
+    PAL_GROWTH_Mat2[t-1,] <- PAL_growths
+  #  print(t)
+  }
+  
+  PAL_GROWTH_Mat2_NoBurn <-  PAL_GROWTH_Mat2[50:(N-1), ]
+  
+ ## taking care of errors from overshooting tmax
+  PAL_GROWTH_Mat2_NoBurn[is.nan(PAL_GROWTH_Mat2_NoBurn)] <- R_past_tmax 
+    PAL_GROWTH_Mat_NoBurn[PAL_GROWTH_Mat_NoBurn<R_past_tmax] <- R_past_tmax 
+
+ # matplot(PAL_GROWTH_Mat2_NoBurn[,1:20], type = 'l')
+  
+  MeanGrowthRates_NoCorr <-   exp(colMeans(log(PAL_GROWTH_Mat2_NoBurn)))  ## Geometric mean of growth rate
+  
+  ############################
+  ### PAL growth, no competition, no fluctuations
+  ### (super simple... )
+  data.frame(Prev_PAL_FEMALE =1,
+             Prev_PAN_FEMALE = 0,
+             PrevTemp = MidTemp) %>%
+    PrepData %>%
+    posterior_epred(PAL_BEST_FIT, draw_ids = BRMS_DRAWS,
+                    newdata =. ) -> GrowthRates_NoFluct_NoComp
+  
+  ############################
+  ### PAL growth, no competition, with fluctuations
+  
+  PAL_GROWTH_Mat3 = matrix(NA,nrow = N, ncol = 1000) # Rows = time, cols = draw from brms (1000)
+  for(t in 2:N){
+    data.frame(Prev_PAL_FEMALE =1,
+               Prev_PAN_FEMALE =0,
+               PrevTemp = TempSeq[t-1]) %>%
+      PrepData %>%
+      posterior_epred(PAL_BEST_FIT, draw_ids = BRMS_DRAWS,
+                      newdata =. )  -> PAL_growths
+    PAL_GROWTH_Mat3[t-1,] <- PAL_growths
+   # print(t)
+  }
+  
+  PAL_GROWTH_Mat3[is.nan(PAL_GROWTH_Mat3)] <- R_past_tmax 
+  PAL_GROWTH_Mat_NoBurn[PAL_GROWTH_Mat_NoBurn<R_past_tmax] <- R_past_tmax 
+
+ # matplot(PAL_GROWTH_Mat3[,1:50], type = 'l')
+  MeanGrowthRates_NoComp_fluct <-   exp(colMeans(log(PAL_GROWTH_Mat3[-N,])))  ## Geometric mean of growth rate
+
+    ############################
+  ### PAL growth, with competition, no fluctuations (affecting either species)
+  data.frame(Prev_PAL_FEMALE =1,
+               Prev_PAN_FEMALE = PAN_Eqm_draws,
+               PrevTemp = MidTemp) %>%
+      PrepData %>%
+      posterior_epred(PAL_BEST_FIT, draw_ids = BRMS_DRAWS,
+                      newdata =. ) %>%
+      diag() -> PAL_growths4
+    GrowthRates_NoFluct_Comp <- PAL_growths4
+
+    
+    print(MidTemp)
+    
+  #######
+  ### Combining
+  data.frame( MidTemp = MidTemp,
+              M.E_full = MeanGrowthRates_full,
+              M.D_NoCorr = MeanGrowthRates_NoCorr,
+              MBase = GrowthRates_NoFluct_NoComp,
+              M.A_comp = GrowthRates_NoFluct_Comp,
+              M.B_fluct = MeanGrowthRates_NoComp_fluct) %>%  ### NB changed label of models for the write-up!
+    return()
+}
+
+```
+
+### Testing functions
+
+```{R eval = FALSE }
+Temp25_test<- CalcPartions(BRMS_DRAWS = BRMS_DRAWS, MidTemp = 27)
+Temp25_test %>% 
+  pivot_longer(-MidTemp, names_to = 'Partition', values_to = 'Value') %>%
+  ggplot( aes( x = Value, fill = Partition))+
+  geom_histogram()+
+  facet_wrap(~Partition)
+
+Temp25_test %>% 
+  pivot_longer(-MidTemp, names_to = 'Partition', values_to = 'Value') %>%
+  group_by(Partition) %>%
+  summarise(median(Value ))
+```
+
+## Running over temperature range
+
+```{r eval = FALSE}
+map_df(.x = seq(24, 27.6, by = 0.2),
+       CalcPartions,
+       BRMS_DRAWS = BRMS_DRAWS,
+       .id = 'Temperature') -> Partition_over_Temp
+
+write_csv(Partition_over_Temp,file =  '../Tables/SimulationPartitions.csv')
+```
+
+```{r}
+Partition_over_Temp<- read_csv(file =  '../Tables/SimulationPartitions.csv')
+Partition_over_Temp%>% 
+  select(-Temperature) %>% 
+  mutate( r0 =  MBase,
+          Delta_cov  = M.E_full-M.D_NoCorr ,
+          Delta_Comp = M.A_comp- MBase,
+          Delta_Fluct= M.B_fluct- MBase,
+          Delta_star = M.E_full - (MBase + Delta_Comp+Delta_Fluct+Delta_cov) ) %>%
+  pivot_longer(-MidTemp, names_to = 'Partition', values_to = 'Value') %>%
+  group_by(Partition, MidTemp) -> Partitions
+
+## Model Outputs
+
+Estimates_df <- data.frame(  Partition =c('M.E_full', 'M.A_comp' , 'M.B_fluct', 'MBase' ),
+                             Estimate = c( 26.25,26.9,  NA, NA)) %>%
+    mutate(Partition =fct_relevel(Partition,'M.E_full' ,'M.A_comp',  'M.B_fluct', 'MBase'))
+
+
+```
+
+## Examining Storage Effect
+
+```{R}
+## Storage Effect not relevant
+Partitions %>%
+  summarise(Median = median(Value )) %>% filter( Partition   == 'Delta_cov') 
+
+```
+
+### Model Responses
+```{R message=FALSE, warning=FALSE}
+Partitions  %>%
+  filter( Partition   %in% c('M.E_full', 'MBase' , 'M.A_comp' , 'M.B_fluct' )) %>%
+  summarise(Median = median(Value),
+            Lower66 = quantile(Value,1/6, na.rm=TRUE),
+            Upper66 = quantile(Value,5/6, na.rm=TRUE)) %>%
+  ungroup() %>%
+  mutate(Partition = fct_relevel(Partition ,'MBase','M.A_comp', 'M.B_fluct','M.E_full')) %>%
+  ggplot( aes( x = MidTemp))+ 
+  scale_y_log10()+
+  geom_rect(xmin=0, xmax=30, ymin=log10(1), ymax=-1, fill = 'rosybrown1', alpha = 0.01)+
+  geom_rect(xmin=0, xmax=30, ymin=log10(1), ymax=20, fill = 'darkseagreen1', alpha = 0.01)+
+  geom_ribbon(aes(ymin = Lower66, ymax = Upper66), fill = 'grey90')+
+  geom_point(aes( y =  Median))+
+  geom_line(aes( y =  Median)) +
+  geom_hline(yintercept = 0)+
+  guides( col ='none')+
+  facet_wrap(~Partition, 
+             nrow=1,
+             ########################### Labeling of models modified to match paper!
+             labeller = labeller(Partition=c('M.E_full' = 'Model E:\nCompetition\nVariable Environment',
+                                             'M.A_comp' = 'Model B:\nCompetition\nStatic Environment',
+                                             'M.B_fluct' ='Model C:\nMonoculture\nVariable Environment', 
+                                             'MBase'  ='Model A:\nMonoculture\nStatic Environment')))+
+  ylab('PAL Invasion Growth Rate' )+ xlab('Central Temperature')+
+  geom_vline(data = Estimates_df, aes(xintercept = Estimate), linetype =2)+
+  theme_minimal()+
+  geom_hline(yintercept = 1)-> Model_LGRs_Plots
+
+Model_LGRs_Plots
+
+```
+
+## Partitions
+
+```{r message=FALSE, warning=FALSE}
+  
+Partitions  %>%
+  filter( Partition   %in% c(  'r0', 'Delta_Comp' ,
+                               'Delta_Fluct',  'Delta_star' )) %>%
+  summarise(Median = median(Value),
+            Lower66 = quantile(Value,1/6, na.rm=TRUE),
+            Upper66 = quantile(Value,5/6, na.rm=TRUE)) %>%
+  ungroup() %>%
+    left_join(data.frame( Partition =c('r0', 'Delta_Comp' ,'Delta_Fluct',  'Delta_star' ),
+                                Intercept = c(1, 0,0,0) ))%>%
+  mutate(Partition = fct_relevel(Partition,'r0', 'Delta_Comp' ,'Delta_Fluct',  'Delta_star') ) %>%
+  ggplot( )+
+  geom_ribbon(aes(x = MidTemp, col = Partition, ymin = Lower66, ymax = Upper66), fill = 'grey90', linetype=0)+
+  geom_point(aes( x = MidTemp, col = Partition, y =  Median))+
+  geom_line(aes(x = MidTemp, col = Partition,   y =  Median)) +
+  geom_hline(aes( yintercept = Intercept))+
+  guides( col ='none')+
+  facet_wrap(~Partition,
+             nrow=1,
+             labeller = labeller(Partition=c('r0' = 'Baseline',
+                                             'Delta_Comp' = ' ΔCompetition',
+                                             'Delta_Fluct' = 'ΔEnvironmental Fluctuation',
+                                             'Delta_star'=' ΔCompetition x Environmental\nFluctuation Interaction')))+
+  ylab('Value of Partition\n(IGR)' )+ xlab('Central Temperature')+
+  theme_minimal()+
+  scale_colour_manual(values = c('black','red', 'blue', 'purple'))-> PartitionsPlots
+
+PartitionsPlots
+
+```
+
+## Combining Plots
+
+```{r message=FALSE, warning=FALSE}
+XX  <- cowplot::plot_grid( Model_LGRs_Plots,
+                    PartitionsPlots, nrow=2, labels = c('a)', 'b)'))
+
+ggsave('../Figures/Fig4_PartitionPlots.png', plot = XX, width = 8, height =6, bg = 'white')
+```
+
+
+
+# Interpolating Within Range of Predictions to find median and 66% intervals
+
+```{R}
+Partitions %>%
+  filter( Partition == 'M.E_full' ) %>%
+  mutate( Excluded = Value <1) %>%
+  group_by(MidTemp) %>%
+  summarise(FracExcl= mean( Excluded)) -> ExclDf
+  kable(ExclDf)
+  
+ ## interpolate temperature: 
+interp<- approx( y = ExclDf$MidTemp, x = ExclDf$FracExcl, xout = c( 1/6, 0.5, 5/6)  )
+interp
+## Convert to generations: 
+(interp$y-23.6)/0.4
+
+```
+
+# Session Info
+
+```{r}
+sessionInfo()
+
+```
+
+
+

@@ -3,7 +3,7 @@ title: "Inferences from models (Selected Model)"
 author: "Chris Terry"
 output: 
   html_document: 
-    toc: yes
+    toc: true
 editor_options: 
   chunk_output_type: console
 ---
@@ -359,8 +359,8 @@ CoexistQuants %>%
   scale_x_continuous(limits = c(-0.25, 1), breaks = c(-0.2, 0, 0.2,0.4, 0.6, 0.8, 1))+
   geom_point(aes( x = NicheDiff, y =FitnessDiff),
              size = 1, alpha = 0.5, shape =20)+
-  geom_point(aes( x = NicheDiff, y =FitnessDiff , fill = Temp),
-             size = 4, alpha =1,col = 'yellow', shape = 21,
+  geom_point(aes( x = NicheDiff, y =FitnessDiff),
+             size = 3, alpha =1, , fill = 'white', col = 'yellow', shape = 21,
              data = CoexistQuants_BEST_touse)+
   facet_wrap(~Temperature, labeller = label_both)+
   scale_color_viridis_c(option = 'A', name = 'Temperature',
@@ -369,8 +369,6 @@ CoexistQuants %>%
                        limits = c(22.5, 30)) -> PhasePlanePlot
 
 PhasePlanePlot
-ggsave( '../Figures/Fig2a_CoexistPlane.png', width = 6, height = 6)
-
 ```
 
 # Posterior Allocations across Temperatures
@@ -393,6 +391,38 @@ read_csv('../InitialDataStorage/TubeDoc_CC3_ForDataEntry.csv') %>%
             SE = SD_Gens / sqrt(60)) %>%
   mutate( PlusSD =Recorded_Exp+SD_Gens, 
           MinusSD = Recorded_Exp - SD_Gens) -> MeanExp
+```
+
+### Calculation of Prediction Interval
+
+
+```{r}
+CoexistQuants %>%
+  filter( Temp <=28, Temp >= 24) %>%
+  mutate(PAN_Wins =  FitnessDiff > 1/NicheOverlap    &   FitnessDiff > NicheOverlap  ,
+         PAL_Wins = FitnessDiff < NicheOverlap       &   FitnessDiff < 1/NicheOverlap , 
+         Coexist = !PAN_Wins & !PAL_Wins   &  NicheDiff>0 , 
+         PE  = !PAN_Wins & !PAL_Wins   &  NicheDiff<0 ) %>%          #  filter( Temp==25.5)%>%
+  select( Temp, PAN_Wins:PE) %>%
+  group_by(Temp) %>%
+  summarise( M_PAN= mean(PAN_Wins, na.rm = TRUE)*100) %>%    
+  pivot_longer(names_to = 'Outcome', values_to = 'Frac', cols = starts_with('M_')) -> ExclusionDF
+
+## Searching for median and 66% central interval  (0.1666   - 0.83333)
+## Inferring to nearest half
+
+## Linear Interpolation 
+
+## interpolate temperature: 
+interp<- approx( y = ExclusionDF$Temp, x = ExclusionDF$Frac, xout = 100*c( 1/6, 0.5, 5/6)  )
+interp
+## Convert to generation: 
+(interp$y-23.6)/0.4
+
+## Sense Check: 
+ExclusionDF%>% filter( Frac/100 > (1/8)  & Frac/100 < (1/4) )      ## 26.1
+ExclusionDF%>% filter( Frac/100 > (1/2.5)  & Frac/100 < (1/1.5) )  ## 26.8
+ExclusionDF%>% filter( Frac/100 < 1-(1/8)  & Frac/100 > 1-(1/4) )  ## 27.35
 ```
 
 ```{R}
@@ -419,10 +449,14 @@ CoexistQuants %>%
   xlab('Temperature')+
   scale_x_continuous(sec.axis = sec_axis(~  ./0.4 - 59 , breaks = c(1:10),
                                          name = 'Generation'))+
-  geom_point( y = 102, x = (MeanExp$Recorded_Exp)*0.4 +24 )+
+  geom_point( y = 102, x = (MeanExp$Recorded_Exp)*0.4 +24, pch =4, size=5, stroke=2)+
   geom_segment( y = 102, yend =102,
                 x = (MeanExp$MinusSD)*0.4 +24  ,
                 xend = (MeanExp$PlusSD)*0.4 +24  ) +
+  geom_vline(xintercept = 26.8, col = 'gold', linewidth =3)+
+  # geom_segment( y = -2, yend =-2,
+  #               x = (6.25)*0.4 +23.6  ,
+  #               xend = (9.375)*0.4 +23.6 , col = 'gold' ) +
   geom_label(x = 26.1, y = 80, label = 'Coexistence' ,fontface = 'italic',
              label.r=unit(0, 'lines'),   label.padding = unit(0.75, "lines"))+
   geom_label(x = 27.25, y = 25, label = 'Exclusion of\nD. pallidifrons'  ,fontface = 'italic',
@@ -442,10 +476,11 @@ Predictions_Plot
 plot_grid(PhasePlanePlot, Predictions_Plot,
           labels = c('a)', 'b)'))
 
-ggsave( '../Figures/Fig2_Predictions.png', 
-        width = 8, height = 4, dpi = 600)
+ggsave( '../Figures/Fig3_Predictions.png', 
+        width = 10, height = 5, dpi = 600)
 
 ```
+
 
 
 

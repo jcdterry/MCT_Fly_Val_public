@@ -1,0 +1,351 @@
+---
+title: "Predictions From Direct Simulation Of Models"
+author: "Chris Terry"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This script takes the best-fitting models, and runs stochastic simulations from them to estimate the distribution of extinction points. While it assumes a particular model form, there is no particular theoretical framework. 
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(brms)
+library(knitr)
+library(cowplot)
+
+## Best Models
+load('../AutoModels/KeyFits/FEMS_PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp')
+load('../AutoModels/KeyFits/FEMS_PAN_TP.Briere_Comp.BHTEMP1_Err.ZiNB_shapecomp')
+
+## Poisson Models
+load( file = '../AutoModels/Fits/FEMS_PAN_TP.Briere_Comp.BHTEMP1_Err.Pois')
+load( file=  '../AutoModels/Fits/FEMS_PAL_TP.Briere_Comp.BHTEMP1_Err.Pois')
+
+```
+
+# Main Models
+
+The `brms` models will output a full posterior of predictions each time. 1000 draws are used in parallel. To traverse the timesteps, the same parameter draw is used for each step. 
+
+-Draws are taken using `posterior_predict`, which incorporates noise from the error distribution.
+-Each PAL population starts equally. 
+-Pandora's are added as per experimental regime. 
+
+## Preamble
+```{R}
+N_rep= 1000
+N_Gens = 20
+
+## Pallidifrons initiation
+PAL_df <- as.data.frame(matrix(NA, nrow = N_rep, ncol = N_Gens ))
+colnames(PAL_df) <- paste0('Gen_', 1:N_Gens)
+PAL_df$ID = 1:N_rep
+PAL_df$Gen_1 <- 3
+
+## Pandora initiation
+PAN_df <- as.data.frame(matrix(NA, nrow = N_rep, ncol = N_Gens ))
+colnames(PAN_df) <- paste0('Gen_', 1:N_Gens)
+PAN_df$ID = 1:N_rep
+PAN_df$Gen_1 <- 0
+
+## Temperature 
+Steady_rise = matrix(seq(24, by= 0.4, l = N_Gens), nrow=1)
+
+VarRise <- matrix(Steady_rise, nrow = N_rep,ncol = N_Gens, byrow = TRUE) +
+  matrix(sample(c(0, +1.5, - 1.5),
+                replace = TRUE, size = N_rep*N_Gens),
+         nrow = N_rep,ncol = N_Gens)
+
+set.seed(1)
+BRMS_DRAWS <- sample(1:8000, size = N_rep, replace = FALSE) ## To mix across chains
+```
+
+
+## Simulation Function
+
+```{r}
+
+Simulator<-function(Temps, PAN_df, PAL_df, N_rep,N_Gens , 
+                    COMP=TRUE,
+                    Model = c('Best', 'Poisson')[1] ){
+  
+  set.seed(1)
+  
+  Scenario <- paste( ifelse( nrow(Temps)==1,
+                             'Steady',
+                             'Var' ), 
+                     COMP,Model,
+                     sep = '_')
+  
+  for(G in 1:(N_Gens-1)){
+    
+    InputData                      <- data.frame( ID = 1:N_rep)  ## build up data.frame for putting into models
+    InputData$Prev_PAL_FEMALE      <- PAL_df[,G]
+    InputData$Prev_PAN_FEMALE      <- PAN_df[,G]
+    InputData$PrevTemp             <- Temps[,G]
+    InputData$Temp20               <- InputData$PrevTemp -20
+    
+    ## Pandora Addition
+    if(COMP & G == 2){InputData$Prev_PAN_FEMALE =  InputData$Prev_PAN_FEMALE + 8}
+    if(COMP &  G == 4){InputData$Prev_PAN_FEMALE =  InputData$Prev_PAN_FEMALE + 4}
+    if(COMP &  G == 8){InputData$Prev_PAN_FEMALE =  InputData$Prev_PAN_FEMALE + 4}
+    
+    ## Calculate numbers for competition modelling
+    InputData <- mutate(InputData, 
+                        Prev_PAN_FEMALE_comp = if_else(Prev_PAN_FEMALE==0,
+                                                       0,Prev_PAN_FEMALE-1 ))
+    InputData <- mutate(InputData, 
+                        Prev_PAL_FEMALE_comp = if_else(Prev_PAL_FEMALE==0,
+                                                       0,Prev_PAL_FEMALE-1 ))
+    
+    if( Model == 'Best'){
+      ### output from posterior crosses inputs and draws - need 
+      
+      PAL_df[,(G+1)] <-   diag(posterior_predict(PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit, 
+                                           newdata = InputData,draw_ids = BRMS_DRAWS))
+      PAN_df[,(G+1)] <-  diag(posterior_predict(PAN_TP.Briere_Comp.BHTEMP1_Err.ZiNB_shapecomp_fit, 
+                                           newdata = InputData, draw_ids = BRMS_DRAWS))  
+    }
+    if(Model == 'Poisson'){
+      PAL_df[,(G+1)] <-  diag(posterior_predict(PAL_TP.Briere_Comp.BHTEMP1_Err.Pois_fit, 
+                                           newdata = InputData, draw_ids = BRMS_DRAWS))  
+      
+      PAN_df[,(G+1)] <-  diag(posterior_predict(PAN_TP.Briere_Comp.BHTEMP1_Err.Pois_fit, 
+                                           newdata = InputData, draw_ids = BRMS_DRAWS))
+    }
+  }
+  
+  ## Plotting ( for debugging)
+  PLOT <- PAL_df %>%
+    pivot_longer(cols = -ID,names_to= 'Gen', values_to = 'NumPAL',
+                 names_prefix = 'Gen_', names_transform = as.integer) %>%
+    ggplot(aes( x = Gen, y = NumPAL, col=factor(ID)))+
+    geom_point()+ geom_line()+guides( col = 'none')
+
+  
+  PAL_df %>%
+    pivot_longer(cols = -ID,names_to= 'Gen', values_to = 'NumPAL',
+                 names_prefix = 'Gen_', names_transform = as.integer) %>%
+    mutate(NumPAL = ifelse(is.nan(NumPAL), 0, NumPAL),
+           PAL_Alive = NumPAL>0) %>%
+    group_by(ID) %>%
+    summarise(N_gens = sum(PAL_Alive, na.rm=TRUE)) %>%
+    mutate(Scenario =  Scenario) %>%
+    ungroup() -> Num_Gens_Alive
+  ### ^^NB Not quite the same as the extinction data used as here just modelling females, but very close 
+  return(list('PAL_df'=PAL_df, 'PAN_df'= PAN_df ,'PLOT'= PLOT, 
+              'Num_Gens_Alive'=Num_Gens_Alive))  
+}
+
+```
+
+# Running
+
+## Steady Rise +Comp
+```{r eval = FALSE}
+SR_out <- Simulator(Temps= Steady_rise,
+                    PAN_df, PAL_df, N_rep,N_Gens , COMP = TRUE)
+
+SR_out$PLOT
+```
+
+## Var Rise +Comp
+```{r eval = FALSE}
+VR_out <- Simulator(Temps= VarRise,
+                    PAN_df, PAL_df, N_rep,N_Gens , COMP = TRUE)
+
+VR_out$PLOT
+```
+
+## No Competition
+
+```{R eval = FALSE}
+SR_nocomp_out <- Simulator(Temps= Steady_rise,
+                           PAN_df, PAL_df, N_rep,N_Gens, COMP = FALSE )
+
+
+
+mean((SR_nocomp_out$Num_Gens_Alive$N_gens)+1)  
+
+VR_nocomp_out <- Simulator(Temps= VarRise,
+                           PAN_df, PAL_df, N_rep,N_Gens, COMP = FALSE )
+```
+
+## Level of zero-inflation with temperature
+
+Direct simulation methods dominated by details of temperature dependence of zero-inflation. 
+
+```{r}
+temp <- seq(22, 28, by = 0.1)
+
+probZERO_mid  = inv_logit_scaled( -17.43  + temp *  0.63   )
+plot( probZERO_mid ~temp)
+
+DRAWS<-as_draws_df(PAL_TP.Briere_Comp.BHTEMP1_Err.ZiNB_temp_fit)
+probZERO_100  = inv_logit_scaled( DRAWS$b_zi_Intercept[1:100]  + rep(temp, 100) *  DRAWS$b_zi_PrevTemp[1:100])
+plot( probZERO_100 ~rep(temp, 100))
+
+```
+
+# Repeat with Poisson Model
+
+## Steady Rise +Comp
+```{r eval = FALSE}
+SR_out_POIS <- Simulator(Temps= Steady_rise,
+                         PAN_df, PAL_df, N_rep,N_Gens,COMP = TRUE,  Model = 'Poisson' )
+
+SR_out_POIS$PLOT
+SR_out_POIS$Num_Gens_Alive$N_gens %>% hist(main = 'Number of Generations seen')
+
+## Generation Extinct
+
+mean((SR_out_POIS$Num_Gens_Alive$N_gens)+1)  
+quantile((SR_out_POIS$Num_Gens_Alive$N_gens)+1, probs = c(0.025, 1/3, 0.5, 2/3, 0.975))
+```
+
+## Var Rise +Comp
+```{r eval = FALSE}
+VR_out_POIS <- Simulator(Temps= VarRise,
+                         PAN_df, PAL_df, N_rep,N_Gens ,COMP = TRUE,  Model = 'Poisson')
+
+VR_out_POIS$PLOT
+
+VR_out_POIS$Num_Gens_Alive$N_gens %>% hist(main = 'Number of Generations seen', breaks= 1:15)
+
+```
+
+## No Competition
+
+```{R eval = FALSE}
+SR_nocomp_out_POIS  <- Simulator(Temps= Steady_rise,
+                           PAN_df, PAL_df, N_rep,N_Gens, COMP = FALSE ,  Model = 'Poisson' )
+
+## Populations are higher without competition, but extinction point is pretty similar. 
+SR_out$PAL_df %>% colMeans()
+SR_nocomp_out$PAL_df %>% colMeans() 
+
+VR_nocomp_out_POIS  <- Simulator(Temps= VarRise,
+                           PAN_df, PAL_df, N_rep,N_Gens, COMP = FALSE ,  Model = 'Poisson')
+```
+
+# Saving
+
+```{r eval = FALSE}
+All_Simulation_list <- list('SR_out'= SR_out ,
+                            'VR_out'= VR_out,
+                            'SR_nocomp_out'= SR_nocomp_out,
+                            'VR_nocomp_out'= VR_nocomp_out,
+                            'VR_out_POIS'= VR_out_POIS ,
+                            'SR_out_POIS'= SR_out_POIS,
+                            'SR_nocomp_out_POIS'= SR_nocomp_out_POIS,
+                            'VR_nocomp_out_POIS'= VR_nocomp_out_POIS)
+
+save(All_Simulation_list, file = '../ProcessedData/All_Simulation_list')
+
+All_Simulation_list %>%
+  map_df('Num_Gens_Alive') %>%
+  mutate(N_gen_extinct = N_gens+1) %>%
+  write_csv( '../Tables/AllSimulationNumGensAlive.csv')
+```
+
+```{R}
+load(file = '../ProcessedData/All_Simulation_list')
+```
+
+```{r}
+VR_out <- All_Simulation_list$VR_out
+VR_nocomp_out<- All_Simulation_list$VR_nocomp_out
+## Populations are higher without competition
+## with competition
+VR_out$Num_Gens_Alive$Scenario[1]
+VR_out$PAL_df %>% colMeans()
+
+## without competition
+VR_nocomp_out$Num_Gens_Alive$Scenario[1]
+VR_nocomp_out$PAL_df %>% colMeans() 
+
+#  extinction point is pretty similar, but in the 'wrong' direction!
+
+list(VR_out, VR_nocomp_out) %>%
+  map_df('Num_Gens_Alive')%>%
+  group_by(Scenario ) %>%
+  mutate(N_gen_extinct = N_gens+1) %>%
+summarise(Mean=mean(N_gen_extinct))
+
+plot_grid(VR_out$PLOT,
+         VR_nocomp_out$PLOT, ncol = 1,
+          labels = c( 'Var Rise, Competition, Best Model',
+                      'Var Rise,  Monoculture, Best Model'))
+
+full_join(VR_out$PAN_df  %>%
+            pivot_longer(cols = -ID,names_to= 'Gen', values_to = 'NumPAN',
+                         names_prefix = 'Gen_',
+                         names_transform = as.integer) %>%
+            mutate( PreviousPAN = lag(NumPAN)),
+          VR_out$PAL_df  %>%
+            pivot_longer(cols = -ID,names_to= 'Gen', values_to = 'NumPAL',
+                         names_prefix = 'Gen_',
+                         names_transform = as.integer) %>%
+            mutate( PreviousPAL = lag(NumPAL)))%>%
+ mutate(PreviousPAN = ifelse(is.na(PreviousPAN), 0, PreviousPAN)) -> FullDF_CompComparison
+
+
+FullDF_CompComparison %>%
+  #filter( ID<20) %>%
+  ggplot( aes(col = PreviousPAL, y = NumPAL, x = 1/(1+PreviousPAN)  ))+
+  geom_point()+
+  geom_smooth( se = FALSE)+
+  scale_x_log10()+
+  ggtitle( 'Pandora competition defintely reduces growth|')
+
+FullDF_CompComparison %>%
+  #filter( ID<20) %>%
+  ggplot( aes(y = NumPAL, x = 1/(1+PreviousPAL)  ))+
+  geom_point()+
+  geom_smooth( se = FALSE)+
+  scale_x_log10()+
+  ggtitle( '')
+
+FullDF_CompComparison %>%
+  left_join(All_Simulation_list[[1]]$Num_Gens_Alive) %>%
+  filter( Gen == N_gens)
+  
+
+```
+
+
+# Table
+
+```{r}
+All_Simulation_list %>%
+  map_df('Num_Gens_Alive')%>%
+  group_by(Scenario ) %>%
+  mutate(N_gen_extinct = N_gens+1) %>%
+  mutate( Temp_Extinct = (N_gen_extinct*0.4 + 23.6 )) %>%
+  summarise(Mean=mean(N_gen_extinct), 
+            LQ95= quantile(N_gen_extinct, 0.025 ),
+            HQ95= quantile(N_gen_extinct, 0.975),
+            LQ66= quantile(N_gen_extinct, 1/6 ),
+            HQ66= quantile(N_gen_extinct, 5/6 )
+  ) %>%
+  as.data.frame()%>%
+  separate(Scenario, into = c('Environment', 'Competition', 'Model')) %>%
+  arrange( Model, Environment, desc(Competition))%>%
+  kable()
+
+```
+
+# Session Info
+
+```{R}
+sessionInfo()
+```
+

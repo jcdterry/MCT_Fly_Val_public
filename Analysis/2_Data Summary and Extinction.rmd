@@ -18,6 +18,7 @@ This document calculates the summary statistics used in the paper and generates 
 library(tidyverse)
 library(cowplot)
 library(lme4)
+library(kable)
 
 Obs<- read_csv('../InitialDataStorage/TubeDoc_CC3_ForDataEntry.csv') %>%
   filter( !is.na(PAL_FEMALE))
@@ -247,9 +248,15 @@ LastSeenData  %>%
   group_by(Competition,Temperature) %>%
   summarise(Mean_Gens = mean(N_gens),
             SD_Gens = sd(N_gens),
+             Mean_Extinct = Mean_Gens+1,
+            Lower66_ext = quantile(N_gens,1/6, na.rm=TRUE)+1,
+            Upper66_ext = quantile(N_gens,5/6, na.rm=TRUE)+1, 
             SE = SD_Gens / sqrt(60))%>%
   mutate(xmin = Mean_Gens-SD_Gens,
          xmax = Mean_Gens+SD_Gens) -> MeanGens
+
+MeanGens %>% kable()
+
 
 LastSeenData%>%  
   ggplot()+
