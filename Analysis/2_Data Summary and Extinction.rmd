@@ -18,7 +18,7 @@ This document calculates the summary statistics used in the paper and generates 
 library(tidyverse)
 library(cowplot)
 library(lme4)
-library(kable)
+library(knitr)
 
 Obs<- read_csv('../InitialDataStorage/TubeDoc_CC3_ForDataEntry.csv') %>%
   filter( !is.na(PAL_FEMALE))

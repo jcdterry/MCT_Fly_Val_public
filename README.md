@@ -1,6 +1,6 @@
 # MCT_Fly_Val_public
  
-Code and raw data to support Terry (2024) *Experimental validation of ecological coexistence theory to forecast extirpation under rising temperatures.*
+Code and raw data to support Terry (2025) *Experimental validation of ecological coexistence theory to forecast extirpation under rising temperatures.*
 
 # Contents
 
@@ -42,9 +42,9 @@ Each are included in both .rmd and knited html form.
 - `LINE_ID`    Line ID, pasting together treatments and replicate values. 
 - `TUBE_ID`    Unique tube ID, 1001:3400
 
-It relates to `TubeDoc_CC3_ALL.csv` via `Gen`,`IncubTemp`,`LINE_ID` & `TUBE_ID`. 
+`TubeDoc_CC3_ForDataEntry.csv` has columns detailing counts of each sex of each species `PAL_FEMALE`,`PAL_MALE`,`PAN_FEMALE`,`PAN_MALE`. Blank entries are zeros. 
 
-It also has columns detailing counts of each sex of each species `PAL_FEMALE`,`PAL_MALE`,`PAN_FEMALE`,`PAN_MALE`. Blank entries are zeros. 
+ `TubeDoc_CC3_ALL.csv` relates to `TubeDoc_CC3_ForDataEntry.csv` via `Gen`,`IncubTemp`,`LINE_ID` & `TUBE_ID`. 
 
 `Tables` and `Figures` both hold outputs from the analysis documents
 
@@ -55,5 +55,6 @@ It also has columns detailing counts of each sex of each species `PAL_FEMALE`,`P
 Code was originally built using R version 4.3.0, brms version 2.19 and tidyverse version 2.0.0. Revisions were made using R 4.4. All analysis documents include `sessionInfo()` in the htmls, which may help resolve any future package mystery.
 
 # Licensing:
+
 Code available for free reuse without restriction or warranty.
-Data may be freely reused with attribution (ideally citing the paper. Preprint: https://doi.org/10.1101/2024.02.22.581553). 
+Data may be freely reused with attribution (ideally citing the paper: Terry (2025) "An experimental validation test of ecological coexistence theory to forecast extinction under rising temperatures" *Ecology Letters* . Preprint: https://doi.org/10.1101/2024.02.22.581553). 
